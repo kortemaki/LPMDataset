@@ -1,0 +1,5 @@
+export DATASET_DIR='path/to/mlp_anon/data'
+export VIDEO_DIR='path/to/LPMDataset/dataset'
+export FIGURES_DIR='path/to/output/figures'
+
+export FFMPEG='path/to/ffmpeg/bin/ffmpeg'
