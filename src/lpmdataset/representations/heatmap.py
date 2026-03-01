@@ -7,10 +7,10 @@ from matplotlib import colors
 from scipy.interpolate import make_interp_spline
 from scipy.stats import wasserstein_distance_nd
 
-from lpmdataset.modalities import mouse
+from src.lpmdataset.modalities import mouse
 
-
-DATA_DIR = os.environ['DATASET_DIR']
+DATA_DIR = "mlpdataset\data_oct"
+#DATA_DIR = os.environ['DATASET_DIR']
 
 class HeatMap:
     def __init__(self, df):
@@ -88,19 +88,28 @@ class HeatMap:
             plt.title(title)
         plt.show()
 
-    def low_res(self) -> np.ndarray:
-        hist, xedges, yedges = np.histogram2d(self.traces['x'], self.traces['y'], bins=32, density=True)
+    def low_res(self,bins=32) -> np.ndarray:
+        hist, xedges, yedges = np.histogram2d(self.traces['x'], self.traces['y'], bins=bins,    # FIXED GLOBAL RANGE
+                                               density=True)
         hist += 1e-7  # ensure every bin is non-zero
         return hist, xedges, yedges
-
     def distance_to(self, other: "HeatMap") -> float:
         u_weights, u_xedges, u_yedges = self.low_res()
         v_weights, v_xedges, v_yedges = other.low_res()
         return wasserstein_distance_nd(
-            list(zip(*(dim.tolist() for dim in np.meshgrid((u_xedges, u_yedges))))),
-            list(zip(*(dim.tolist() for dim in np.meshgrid((v_xedges, v_yedges))))),
-            u_weights, v_weights
+             np.array(np.meshgrid(
+                0.5 * (u_xedges[:-1] + u_xedges[1:]),
+                0.5 * (u_yedges[:-1] + u_yedges[1:])
+            )).reshape(2, -1).T,
+            np.array(np.meshgrid(
+                0.5 * (v_xedges[:-1] + v_xedges[1:]),
+                0.5 * (v_yedges[:-1] + v_yedges[1:])
+            )).reshape(2, -1).T,
+            u_weights.flatten(),
+            v_weights.flatten()
         )
+
+
 
 
 def __main__() -> None:
