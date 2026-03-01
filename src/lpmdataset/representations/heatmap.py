@@ -97,9 +97,16 @@ class HeatMap:
         u_weights, u_xedges, u_yedges = self.low_res()
         v_weights, v_xedges, v_yedges = other.low_res()
         return wasserstein_distance_nd(
-            list(zip(*(dim.tolist() for dim in np.meshgrid((u_xedges, u_yedges))))),
-            list(zip(*(dim.tolist() for dim in np.meshgrid((v_xedges, v_yedges))))),
-            u_weights, v_weights
+             np.array(np.meshgrid(
+                0.5 * (u_xedges[:-1] + u_xedges[1:]),
+                0.5 * (u_yedges[:-1] + u_yedges[1:])
+            )).reshape(2, -1).T,
+            np.array(np.meshgrid(
+                0.5 * (v_xedges[:-1] + v_xedges[1:]),
+                0.5 * (v_yedges[:-1] + v_yedges[1:])
+            )).reshape(2, -1).T,
+            u_weights.flatten(),
+            v_weights.flatten()
         )
 
 
