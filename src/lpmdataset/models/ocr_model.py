@@ -275,7 +275,7 @@ def region_ids_to_coords(region_ids, centers):
     ys = [c[1] for c in coords]
     return np.array(xs), np.array(ys)
 
-def compute_heatmap_iou(df1, df2, bins=32):
+def compute_heatmap_iou(df1, df2, bins=8):
     """
     Computes spatial IoU between two coordinate DataFrames.
     Both must contain normalized x,y in [0,1].
@@ -410,7 +410,7 @@ def evaluate_ocr_baseline(
     # -------------------------------------------------
     # 10. IoU (standalone version)
     # -------------------------------------------------
-    iou = compute_heatmap_iou(pred_df, gt_df, bins=16)
+    iou = compute_heatmap_iou(pred_df, gt_df, bins=8)
 
     return emd, rmse, iou
 
