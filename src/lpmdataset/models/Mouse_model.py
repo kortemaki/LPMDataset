@@ -20,7 +20,7 @@ class MouseOnlyDataset(Dataset):
 
         for _, m in pairs:
             pts, deltas = load_mouse_trace(m)
-
+# Seq_len here is 0. If the number of deltas is less than 20 then the file is skipped.
             if len(deltas) <= SEQ_LEN:
                 continue
 
@@ -244,12 +244,12 @@ def evaluate_mouse_emd(
 
 if __name__ == "__main__":
 
-    train_pairs = build_slide_pairs_recursive(TRAIN_ROOT)
-    test_pairs  = build_slide_pairs_recursive(TEST_ROOT)
+    train_pairs = build_slide_pairs_recursive(TRAIN_ROOT) # Gets trace and ocr pair for testing
+    test_pairs  = build_slide_pairs_recursive(TEST_ROOT) #Gets tace and ocr pair for testing
 
     mean, std = compute_delta_stats(train_pairs)
 
-    train_ds = MouseOnlyDataset(train_pairs, mean, std, return_start=False)
+    train_ds = MouseOnlyDataset(train_pairs, mean, std, return_start=False) 
     test_ds  = MouseOnlyDataset(test_pairs, mean, std, return_start=True)
 
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)

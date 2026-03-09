@@ -65,7 +65,7 @@ def load_mouse(mouse_path):
 
     return df
 
-def normalize_mouse(df, screen_w=1200, screen_h=900):
+def normalize_mouse(df, screen_w=854, screen_h=480):
     df["x"] /= screen_w
     df["y"] /= screen_h
     return df
