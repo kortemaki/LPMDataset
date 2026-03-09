@@ -18,7 +18,7 @@ SEED = 42
 #TRAIN_PATTERNS = ["0*", "1*","20","21","22","23"]
 #TEST_PATTERNS = ["24","25","26","27","28","29"]
 
-TRAIN_ROOT = "mlpdataset/data_oct/anat-1"
+TRAIN_ROOT = "mlpdataset/data_oct/anat-1/AnatomyPhysiology/"                
 TEST_ROOT  = "mlpdataset/data_oct/anat-2"
 
 # If you want all folders inside each:
@@ -40,18 +40,17 @@ import os
 
 def build_slide_pairs_recursive(root):
     """
-    Works for ANY dataset layout depth.
-    Finds all slide_*_trace.csv recursively and matches OCR.
+    This function finds all slide_*_trace.csv recursively and their corresponding OCR files and pairs them
     """
 
-    trace_files = glob(os.path.join(root, "**", "slide_*_trace.csv"), recursive=True)
+    trace_files = glob(os.path.join(root, "**", "slide_*_trace.csv"), recursive=True) #creates path to the trace files 
 
     print(f"{root} → Found {len(trace_files)} trace files")
     
     pairs = []
 
     for trace_path in trace_files:
-        ocr_path = trace_path.replace("_trace.csv", "_ocr.csv")
+        ocr_path = trace_path.replace("_trace.csv", "_ocr.csv") 
 
         if os.path.exists(ocr_path):
             pairs.append((ocr_path, trace_path))
@@ -62,6 +61,8 @@ def build_slide_pairs_recursive(root):
     return pairs
 
 # ---------------- LOAD MOUSE ----------------
+""" This function loads co-oridnates from mouse trace files and calculates delta x and y to find the veloctiy.
+"""
 def load_mouse_trace(path):
     xs, ys = [], []
 
@@ -71,21 +72,21 @@ def load_mouse_trace(path):
         ci = header.index("coord")
 
         for row in reader:
-            coord = row[ci].strip().strip("()")
+            coord = row[ci].strip().strip("()") # x,y cordinates from trace file
             if not coord:
                 continue
             try:
-                x_str, y_str = coord.split(",")
-                xs.append(float(x_str))
-                ys.append(float(y_str))
+                x_str, y_str = coord.split(",") #x_str = x cordinate, y_str = y co-ordinate
+                xs.append(float(x_str)) # add x coor in array
+                ys.append(float(y_str))# add y coor in array
             except:
                 continue
 
-    pts = np.column_stack([xs, ys])
-    if len(pts) < 2:
+    pts = np.column_stack([xs, ys]) #array of x and y co-ordinates
+    if len(pts) < 2: 
         return np.zeros((0,2)), np.zeros((0,2))
 
-    deltas = pts[1:] - pts[:-1]
+    deltas = pts[1:] - pts[:-1] #computes delta to calculate velocity
     return pts[:-1], deltas
 
 
