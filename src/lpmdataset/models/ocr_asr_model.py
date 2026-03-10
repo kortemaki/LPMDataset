@@ -13,11 +13,34 @@ from src.lpmdataset.modalities import mouse
 from src.lpmdataset.representations.heatmap import HeatMap
 
 
+""" In this code we combine three modalities - OCR , mouse trace and ASR speech  to train the model. 
+The OCR data is used to define spatial regions on the slide. Very small words/regions - like punctuation- are discarded as noise. Based on the region confidence of a word
+in the OCR data, the top 80 OCR boxes are selected. Each of these boxes defines a region , represented by its spatial location (center co-ordinates). 
+This defines the spatial strucure of the slide.
+
+The mouse trace has timestamped cursor co-ordinate data. A mouse is mappend to the nearest OCR region based on Eucleidian  distance of the co-ordinates from the 
+corner of the OCR boxes. This way, mouse trajectory is converted into region indices showing where the lecturer is poiting at over time.
+
+The ASR data spoken words transcript. As this is the simplest multi-modal model,speech is represented as bag-of-words approach.
+The timestamps from the ASR data are ignored.
+Thre frequncy of each word in ASR data  is calculated and the 100 most frquently used words are picked up from the vocablury.
+They are concatenated into a 100- dimensional vector representing the relative feq of vocb word in transcript.
+
+Now, the imput at each timestamp is concatenation of is 
+OCR region geometery  + 
+Mouse Pointer Region history (one hot vector) + 
+ASR bag-of-words words vector.
+
+The model is trained to predict next-region: given the previous SEQ_LEN steps of pointer movement along with slide layout and speech context, 
+it predicts the next OCR region where the pointer will move.
+
+"""
+
 # =========================================================
 # CONFIG
 # =========================================================
 TOP_K_BOXES = 80
-TEXT_DIM = 100
+TEXT_DIM = 100 #small bag of words range
 
 
 # =========================================================
@@ -270,14 +293,14 @@ def evaluate_multimodal(
     dataset,
     test_pairs,
     idx=0,
-    steps=SEQ_LEN,
+    steps=SEQ_LEN, #20 from shared code
     screen_w=1200,
     screen_h=900
 ):
 
     model.eval()
 
-    # 🔥 Now dataset gives slide_idx
+    # Now dataset gives slide_idx
     x, _, centers, slide_idx = dataset[idx]
 
     # Correct slide-level matching
