@@ -5,7 +5,7 @@ from subprocess import call
 import os
 from youtube_dl import YoutubeDL
 import json
-import pandas as pd 
+import pandas as pd
 import pdb
 
 
@@ -34,9 +34,5 @@ if __name__ == "__main__":
 
         if scrape_scope == 'playlist':
             run = "youtube-dl -f 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' -i -o {save_dir}'/%(playlist_title)s/%(playlist_index)s/%(id)s.%(ext)s' --write-auto-sub {link}".format(link = link, save_dir = save_dir)
-        
+
         res1 = call(run, shell=True)
-        
-
-
-    

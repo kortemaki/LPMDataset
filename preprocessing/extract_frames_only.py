@@ -36,7 +36,7 @@ if __name__ == "__main__":
         ):
             time_string = str(max(timestamp_next - 1, (timestamp_prev + timestamp_next)/2))
             dir_path = os.path.dirname(video_path)
-            output_save = os.path.join(tgt_dir_path, "slide_{}.png".format(str(i).zfill(3)))
+            output_save = os.path.join(tgt_dir_path, f"slide_{str(i).zfill(3)}.png")
             frame_capture = f"{FFMPEG} -ss {time_string} -i {video_path} -frames:v 1 {output_save}"
             subprocess.call(frame_capture, shell = True)
 

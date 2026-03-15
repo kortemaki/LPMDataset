@@ -2,6 +2,20 @@ import ast
 
 import numpy as np
 import pandas as pd
+from pydantic import ConfigDict
+from pydantic.dataclasses import dataclass
+
+
+@dataclass(config=ConfigDict(arbitrary_types_allowed=True))
+class MouseTrace:
+    df: pd.DataFrame
+
+    def normalize_traces(self, height, width) -> None:
+        self.df['x_normalized'] = self.df['x'] / width
+        self.df['y_normalized'] = self.df['y'] / height
+
+    def between(self, start_time, end_time) -> pd.DataFrame:
+        return self.df[(self.df['timestamp'] >= start_time) & (self.df['timestamp'] <= end_time)].copy()
 
 
 def calculate_mad(points: np.ndarray) -> float:
