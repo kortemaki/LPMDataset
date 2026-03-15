@@ -1,4 +1,5 @@
 export DATASET_DIR='path/to/mlp_anon/data'
+export SLIDE_IMAGES_DIR='path/to/LPM_DATASET/dataset/figures'
 export VIDEO_DIR='path/to/LPMDataset/dataset'
 export FIGURES_DIR='path/to/output/figures'
 

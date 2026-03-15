@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from matplotlib import colors
 from scipy.interpolate import make_interp_spline
 from scipy.stats import wasserstein_distance_nd
+from PIL import Image
 
 from src.lpmdataset.modalities import mouse
 
@@ -110,14 +111,50 @@ class HeatMap:
         )
 
 
+<<<<<<< HEAD
+def visualize_attention(slide_path, heatmap, sentence_text, output_path="debug_attention.png"):
+    """
+    slide_path: Path to the original slide PNG
+    heatmap: The (14, 14) tensor/array from get_attention_heatmap
+    sentence_text: The ASR sentence being grounded
+    """
+    # 1. Load the original image
+    img = Image.open(slide_path).convert("RGB")
+    width, height = img.size
+
+    # 2. Normalize and upsample the heatmap
+    # Convert from torch tensor to numpy if necessary
+    if hasattr(heatmap, 'detach'):
+        heatmap = heatmap.detach().cpu().numpy()
+
+    # Min-max normalization for better contrast in visualization
+    heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
+
+    # 3. Create the plot
+    plt.figure(figsize=(10, 6))
+    plt.imshow(img)
+
+    # Overlay the heatmap
+    # 'extent' maps the 14x14 grid to the full pixel dimensions of the image
+    plt.imshow(heatmap, cmap='jet', alpha=0.4, extent=(0, width, height, 0), interpolation='bilinear')
+
+    plt.title(f"ASR Grounding: {sentence_text[:50]}...")
+    plt.axis('off')
+
+    if output_path:
+        plt.savefig(output_path, bbox_inches='tight')
+        print(f"Visualization saved to {output_path}")
+    plt.show()
+=======
+>>>>>>> refs/remotes/origin/midterm-modalities
 
 
 def __main__() -> None:
-    for fname in ["anat-1/AnatomyPhysiology/13/slide_004_trace.csv"]:
+    for fname in ["anat-1/AnatomyPhysiology/01/slide_001_trace.csv"]:
         df = mouse.load_trace_data(os.path.join(DATA_DIR, fname))
         hm = HeatMap(df)
         hm.upsample()
-        hm.show(title=fname, bins=224)
+        hm.show(title=fname, bins=32)
 
         print(hm.distance_to(hm))
         print(hm.distance_to(mouse.load_trace_data(os.path.join(DATA_DIR, "anat-1/AnatomyPhysiology/01/slide_002_trace.csv"))))

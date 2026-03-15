@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 import os
 import textwrap
 
@@ -6,6 +7,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from cyclopts import App
+import pandas as pd
+from pydantic import computed_field, ConfigDict
+from pydantic.dataclasses import dataclass
+
+from lpmdataset.utils import STOPWORDS
 
 
 DATA_DIR = os.environ.get('DATASET_DIR', '')
@@ -28,6 +34,87 @@ def load_ocr_data(fname):
   df['text'] = df['text'].astype(str).str.strip()
   df = df[df['text'].ne('') & df['text'].ne('nan')].reset_index(drop=True)
   return df
+
+
+@dataclass(config=ConfigDict(arbitrary_types_allowed=True))
+class OCR:
+    df: pd.DataFrame
+
+    @computed_field
+    def tokens(self) -> Iterable[str]:
+        return self.df['text'].tolist()
+
+    def to_string(self) -> str:
+        return " ".join(self.tokens)
+
+    @computed_field
+    def bbs(self) -> pd.DataFrame:
+        return self.df[['left', 'top', 'width', 'height']]
+
+    def rescale_bbs_xyxy(self, height: int, width: int, scale_factor=1000, astype=int) -> None:
+        """
+        Transforms OCR [left, top, width, height] into [x0, y0, x1, y1]
+        scaled to the [0, scale_factor] range using signed integers.
+        """
+        # 1. Calculate the 4 corners in pixel space
+        x0 = np.clip(self.df['left'].values, 0, width)
+        y0 = np.clip(self.df['top'].values, 0, height)
+        x1 = np.clip(x0 + self.df['width'].values, 0, width)
+        y1 = np.clip(y0 + self.df['height'].values, 0, height)
+
+        # 2. Scale and Clamp
+        # We use scale_factor - 1 (999) to be absolutely safe against OOB indices
+        limit = scale_factor - 1
+
+        s_x0 = np.clip((x0 / width * limit), 0, limit).astype(astype)
+        s_y0 = np.clip((y0 / height * limit), 0, limit).astype(astype)
+        s_x1 = np.clip((x1 / width * limit), 0, limit).astype(astype)
+        s_y1 = np.clip((y1 / height * limit), 0, limit).astype(astype)
+
+        # 3. Stack into the final (N, 4) shape
+        self.df['scaled_box'] = np.stack((s_x0, s_y0, s_x1, s_y1), axis=1).tolist()
+
+    def prune_ocr_to_budget(self, tokenizer, token_budget=100):
+        """
+        1. Removes stopwords.
+        2. Calculates token length per word.
+        3. Prunes by bounding box area until within token_budget.
+        """
+        # Define basic stopwords (or use a library like NLTK)
+        STOPWORDS = {"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "of"}
+
+        # 1. Basic Cleaning
+        self.df = self.df[~self.df['text'].str.lower().isin(STOPWORDS)].copy()
+
+        # 2. Calculate Token Lengths
+        # Note: LayoutLMv3 tokenizer usually adds a prefix space for consistency
+        def get_token_len(text):
+            # We encode without special tokens to get the raw word count
+            tokens = tokenizer._tokenizer.encode(" " + text, add_special_tokens=False)
+            return len(tokens.ids)
+
+        self.df['token_count'] = self.df['text'].apply(get_token_len)
+
+        # 3. Calculate "Importance" (Area)
+        # Larger text is usually more semantically important on a slide
+        self.df['area'] = self.df['width'] * self.df['height']
+
+        # 4. Pruning Loop
+        # Sort by area descending (keep the biggest boxes)
+        self.df = self.df.sort_values(by='area', ascending=False)
+
+        kept_indices = []
+        current_token_total = 0
+
+        for idx, row in self.df.iterrows():
+            if current_token_total + row['token_count'] <= token_budget:
+                kept_indices.append(idx)
+                current_token_total += row['token_count']
+            else:
+                continue # Skip this word, it's too 'expensive' for the remaining budget
+
+        # Return the pruned dataframe, re-sorted by original document order (top-to-bottom)
+        self.df = self.df.loc[kept_indices].copy().sort_index()
 
 
 def _prepare_plot(image_path, df, *, conf_threshold=0, figsize=(14, 10)):
