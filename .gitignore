@@ -1,3 +1,6 @@
 mlpdataset/
 playground/
 Figures/
+results/
+ocr_segments/
+ocr_asr_mouseaux_model/

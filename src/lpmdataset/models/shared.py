@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 
 # ---------------- CONFIG ----------------
 SEQ_LEN = 20
-BATCH_SIZE = 64
+BATCH_SIZE = 16
 EPOCHS = 30
 LR = 1e-3
 SEED = 42
@@ -18,9 +18,21 @@ SEED = 42
 #TRAIN_PATTERNS = ["0*", "1*","20","21","22","23"]
 #TEST_PATTERNS = ["24","25","26","27","28","29"]
 
-TRAIN_ROOT = "mlpdataset/data_oct/anat-1/AnatomyPhysiology/"                
-TEST_ROOT  = "mlpdataset/data_oct/anat-2"
+#
+TRAIN_ROOT = [ "mlpdataset/data_oct/anat-1" ,
+"mlpdataset/data_oct/anat-2",
+"mlpdataset/data_oct/bio-1",
+"mlpdataset/data_oct/bio-3",
+"mlpdataset/data_oct/bio-4",
+"mlpdataset/data_oct/dental",
+"mlpdataset/data_oct/psy-1",
+"mlpdataset/data_oct/psy-2"  ]
 
+TEST_ROOT  = ["mlpdataset/data_oct/ml-1",
+             "mlpdataset/data_oct/speaking"]
+
+#TRAIN_ROOT = "mlpdataset/data_oct/anat-1/AnatomyPhysiology/"                
+#TEST_ROOT  = "mlpdataset/data_oct/anat-2"
 # If you want all folders inside each:
 TRAIN_PATTERNS = ["0*", "1*","20","21","22","23"]
 TEST_PATTERNS  = ["*"]
@@ -38,27 +50,33 @@ from glob import glob
 import os
 
 
-def build_slide_pairs_recursive(root):
+def build_slide_pairs_recursive(roots):
     """
-    This function finds all slide_*_trace.csv recursively and their corresponding OCR files and pairs them
+    Accepts a single root OR a list of roots.
+    Recursively finds all slide_*_trace.csv and matches OCR files.
     """
 
-    trace_files = glob(os.path.join(root, "**", "slide_*_trace.csv"), recursive=True) #creates path to the trace files 
+    # Normalize input → always a list
+    if isinstance(roots, str):
+        roots = [roots]
 
-    print(f"{root} → Found {len(trace_files)} trace files")
-    
-    pairs = []
+    all_pairs = []
 
-    for trace_path in trace_files:
-        ocr_path = trace_path.replace("_trace.csv", "_ocr.csv") 
+    for root in roots:
+        trace_files = glob(os.path.join(root, "**", "slide_*_trace.csv"), recursive=True)
 
-        if os.path.exists(ocr_path):
-            pairs.append((ocr_path, trace_path))
-        else:
-            print("⚠ Missing OCR:", trace_path)
+        print(f"{root} → Found {len(trace_files)} trace files")
 
-    print("Aligned pairs:", len(pairs))
-    return pairs
+        for trace_path in trace_files:
+            ocr_path = trace_path.replace("_trace.csv", "_ocr.csv")
+
+            if os.path.exists(ocr_path):
+                all_pairs.append((ocr_path, trace_path))
+            else:
+                print("⚠ Missing OCR:", trace_path)
+
+    print("Total aligned pairs:", len(all_pairs))
+    return all_pairs
 
 # ---------------- LOAD MOUSE ----------------
 """ This function loads co-oridnates from mouse trace files and calculates delta x and y to find the veloctiy.
