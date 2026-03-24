@@ -138,6 +138,29 @@ class Presentation(BaseModel):
     yt_id: str
     folder: Folder
 
+    @classmethod
+    def from_directory(cls, path: str) -> "Presentation":
+        """Construct a Presentation from a video directory path.
+
+        Finds the ``{yt_id}_transcripts.csv`` file inside *path* to determine
+        the YouTube ID and derives the :class:`Folder` from the parent
+        directory of *path* relative to ``DATASET_DIR``.
+        """
+        path = os.path.normpath(path)
+        yt_id = None
+        for fname in os.listdir(path):
+            if fname.endswith('_transcripts.csv'):
+                yt_id = fname[:-len('_transcripts.csv')]
+                break
+        if yt_id is None:
+            raise FileNotFoundError(
+                f"No _transcripts.csv file found in {path}"
+            )
+        folder_str = os.path.relpath(
+            os.path.dirname(path), DATA_DIR
+        ).replace(os.sep, '/')
+        return cls(yt_id=yt_id, folder=Folder(folder_str))
+
     @computed_field
     @cached_property
     def dir_path(self) -> str:
@@ -210,3 +233,42 @@ class Slide(BaseModel):
     @cached_property
     def mouse_trace(self) -> MouseTrace:
         return MouseTrace(df=load_trace_data(self.trace_file))
+
+    def get_region_for_point(self, x: float, y: float) -> int:
+        """Return 1 if the unnormalized point (x, y) falls inside any OCR
+        bounding box for this slide, 0 otherwise."""
+        bbs = self.ocr_text.bbs
+        inside = (
+            (bbs['left'] <= x)
+            & (x <= bbs['left'] + bbs['width'])
+            & (bbs['top'] <= y)
+            & (y <= bbs['top'] + bbs['height'])
+        )
+        return 1 if inside.any() else 0
+
+    @classmethod
+    def from_prediction_file(cls, file_path: str) -> "Slide":
+        """Construct the Slide that a prediction CSV corresponds to.
+
+        The prediction file is expected at:
+        ``results/ocr_asr/<root>/<order>/<video>/<slide_name>.csv``
+        """
+        file_path = os.path.normpath(file_path)
+        slide_name = os.path.splitext(os.path.basename(file_path))[0]
+        parent = os.path.dirname(file_path)
+        video_folder = os.path.basename(parent)
+        parent = os.path.dirname(parent)
+        order_folder = os.path.basename(parent)
+        parent = os.path.dirname(parent)
+        root_folder = os.path.basename(parent)
+
+        presentation = Presentation.from_directory(
+            os.path.join(
+                os.environ['DATASET_DIR'],
+                root_folder,
+                order_folder,
+                video_folder,
+            )
+        )
+        slide_no = int(slide_name.split('_')[-1])
+        return cls(presentation=presentation, slide_no=slide_no)

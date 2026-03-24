@@ -2,7 +2,8 @@ import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from src.lpmdataset.representations.heatmap import *
+from lpmdataset.representations.heatmap import *
+from lpmdataset.data_models import Slide
 import matplotlib 
 matplotlib.use("Agg")
 
@@ -70,6 +71,66 @@ def compute_metrics(df):
     iou = np.minimum(ph,gh).sum() / (np.maximum(ph,gh).sum()+1e-8)
 
     return ad, rmse, iou
+
+
+# =========================================================
+# REGION METRICS
+# =========================================================
+
+def compute_region_accuracy(files):
+    """Compute the rate at which predicted and gold points fall in the
+    same region type (inside an OCR bounding box vs. outside).
+
+    Returns a dict with per-file accuracies and overall statistics.
+    """
+
+    all_match, all_total = 0, 0
+    per_file = []
+
+    for f in files:
+
+        df = pd.read_csv(f)
+
+        required = ["pred_x","pred_y","gold_x","gold_y"]
+        if not all(c in df.columns for c in required):
+            print(f"Skipping (bad format): {f}")
+            continue
+
+        if len(df) < 1:
+            continue
+
+        try:
+            slide = Slide.from_prediction_file(f)
+        except Exception as exc:
+            print(f"Skipping {f}: {exc}")
+            continue
+
+        pred_regions = df.apply(
+            lambda row: slide.get_region_for_point(
+                float(row['pred_x']), float(row['pred_y'])
+            ), axis=1,
+        )
+        gold_regions = df.apply(
+            lambda row: slide.get_region_for_point(
+                float(row['gold_x']), float(row['gold_y'])
+            ), axis=1,
+        )
+
+        matches = (pred_regions == gold_regions).sum()
+        total = len(df)
+        acc = matches / total
+
+        per_file.append({"file": f, "region_accuracy": acc})
+        all_match += matches
+        all_total += total
+
+    overall = all_match / (all_total + 1e-8)
+
+    print("\n--- Region Metrics ---")
+    print(f"Files evaluated: {len(per_file)}")
+    print(f"Region Accuracy (overall): {overall:.4f}")
+
+    return {"per_file": per_file, "overall_accuracy": overall}
 
 
 # =========================================================
@@ -313,6 +374,7 @@ def evaluate_model(root, name):
     print(f"AD:{np.mean(ads):.4f} RMSE:{np.mean(rmses):.4f} IoU:{np.mean(ious):.4f}")
 
     metrics = compute_movement_metrics(files)
+    region = compute_region_accuracy(files)
 
     plot_confusion_matrix(metrics, name)
     plot_metric_bars(metrics, name)
