@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from enum import Enum, StrEnum
 from functools import cached_property
+import json
 import os
 
 import pandas as pd
@@ -14,6 +15,15 @@ from lpmdataset.modalities.mouse import MouseTrace, load_trace_data
 DATA_DIR = os.environ['DATASET_DIR']
 FIGURES_DIR = os.environ['FIGURES_DIR']
 SLIDE_IMAGES_DIR = os.environ['SLIDE_IMAGES_DIR']
+
+
+class SlideRegion(Enum):
+    OTHER = 0
+    OCR = 1
+    IMAGE = 2
+    DIAGRAM = 3
+    TABLE = 4
+    EQUATION = 5
 
 
 class Folder(StrEnum):
@@ -102,6 +112,8 @@ class Resolution(Enum):
 
     def __str__(self) -> str:
         return self._label
+
+figure_bbs = pd.read_csv(os.path.join(DATA_DIR, "figure_annotations.csv"))
 
 SPEAKER_RESOLUTIONS = {
   'dental/OperativeDentistryNBDEPartII': Resolution.R720P,
@@ -234,9 +246,42 @@ class Slide(BaseModel):
     def mouse_trace(self) -> MouseTrace:
         return MouseTrace(df=load_trace_data(self.trace_file))
 
-    def get_region_for_point(self, x: float, y: float) -> int:
-        """Return 1 if the unnormalized point (x, y) falls inside any OCR
-        bounding box for this slide, 0 otherwise."""
+    @computed_field
+    @cached_property
+    def figures(self) -> pd.DataFrame:
+        """Return figure bounding boxes for this slide as a DataFrame."""
+        key = f"data/{self.presentation.folder}/{self.presentation.yt_id}/slide_{self.slide_no:03d}.jpg"
+        row = figure_bbs[figure_bbs['Input.save_dir'] == key]
+        if row.empty:
+            return pd.DataFrame(columns=["label", "left", "top", "height", "width"])
+        bboxes = json.loads(row.iloc[0]['boundingBoxes'])
+        return pd.DataFrame(bboxes, columns=["label", "left", "top", "height", "width"])
+
+    _FIGURE_LABEL_TO_REGION = {
+        "Image": SlideRegion.IMAGE,
+        "Diagram": SlideRegion.DIAGRAM,
+        "Table": SlideRegion.TABLE,
+        "Equation": SlideRegion.EQUATION,
+    }
+
+    def get_region_for_point(self, x: float, y: float) -> SlideRegion:
+        """Return the SlideRegion for the unnormalized point (x, y)."""
+        # Check figure bounding boxes first
+        figs = self.figures
+        if not figs.empty:
+            inside = (
+                (figs['left'] <= x)
+                & (x <= figs['left'] + figs['width'])
+                & (figs['top'] <= y)
+                & (y <= figs['top'] + figs['height'])
+            )
+            hits = figs.loc[inside, 'label']
+            for label in hits:
+                region = self._FIGURE_LABEL_TO_REGION.get(label)
+                if region is not None:
+                    return region
+
+        # Fall back to OCR bounding boxes
         bbs = self.ocr_text.bbs
         inside = (
             (bbs['left'] <= x)
@@ -244,7 +289,10 @@ class Slide(BaseModel):
             & (bbs['top'] <= y)
             & (y <= bbs['top'] + bbs['height'])
         )
-        return 1 if inside.any() else 0
+        if inside.any():
+            return SlideRegion.OCR
+
+        return SlideRegion.OTHER
 
     @classmethod
     def from_prediction_file(cls, file_path: str) -> "Slide":
