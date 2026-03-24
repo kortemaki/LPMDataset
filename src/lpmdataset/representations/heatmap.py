@@ -8,7 +8,7 @@ from scipy.interpolate import make_interp_spline
 from scipy.stats import wasserstein_distance_nd
 from PIL import Image
 
-from src.lpmdataset.modalities import mouse
+from lpmdataset.modalities import mouse
 
 DATA_DIR = "mlpdataset\data_oct"
 #DATA_DIR = os.environ['DATASET_DIR']
@@ -111,7 +111,6 @@ class HeatMap:
         )
 
 
-<<<<<<< HEAD
 def visualize_attention(slide_path, heatmap, sentence_text, output_path="debug_attention.png"):
     """
     slide_path: Path to the original slide PNG
@@ -145,8 +144,6 @@ def visualize_attention(slide_path, heatmap, sentence_text, output_path="debug_a
         plt.savefig(output_path, bbox_inches='tight')
         print(f"Visualization saved to {output_path}")
     plt.show()
-=======
->>>>>>> refs/remotes/origin/midterm-modalities
 
 
 def __main__() -> None:

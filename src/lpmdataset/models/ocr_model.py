@@ -4,14 +4,14 @@ import csv
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from src.lpmdataset.models.shared import *
-from src.lpmdataset.models.shared import evaluate_region
+from lpmdataset.models.shared import *
+from lpmdataset.models.shared import evaluate_region
 import matplotlib.pyplot as plt
 import random
 import pandas as pd
-from src.lpmdataset.modalities import mouse
-from src.lpmdataset.representations import heatmap
-from src.lpmdataset.representations.heatmap import HeatMap
+from lpmdataset.modalities import mouse
+from lpmdataset.representations import heatmap
+from lpmdataset.representations.heatmap import HeatMap
 
 
 

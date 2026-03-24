@@ -7,10 +7,10 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from collections import Counter
 
-from src.lpmdataset.models.shared import *
-from src.lpmdataset.models.shared import evaluate_region
-from src.lpmdataset.modalities import mouse
-from src.lpmdataset.representations.heatmap import HeatMap
+from lpmdataset.models.shared import *
+from lpmdataset.models.shared import evaluate_region
+from lpmdataset.modalities import mouse
+from lpmdataset.representations.heatmap import HeatMap
 
 
 """ In this code we combine three modalities - OCR , mouse trace and ASR speech  to train the model. 

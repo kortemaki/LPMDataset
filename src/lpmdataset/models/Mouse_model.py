@@ -5,8 +5,8 @@ from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 import numpy as np
 
-from src.lpmdataset.models.shared import *
-from src.lpmdataset.representations.heatmap import HeatMap
+from lpmdataset.models.shared import *
+from lpmdataset.representations.heatmap import HeatMap
 
 
 # =========================================================
