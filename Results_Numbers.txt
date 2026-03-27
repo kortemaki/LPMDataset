@@ -1,0 +1,84 @@
+===== Clip =====
+2026-03-26 22:04:02,278 [INFO] Found 1438 result files
+2026-03-26 22:04:17,304 [INFO] Trajectory — AD:0.3280  RMSE:0.3470  IoU:0.0047
+2026-03-26 22:04:33,137 [INFO] 
+--- Movement Metrics ---
+2026-03-26 22:04:33,137 [INFO] TP:2858  TN:5680  FP:610  FN:256326
+2026-03-26 22:04:33,137 [INFO] P:0.824  R:0.011  F1:0.022  Acc:0.032
+2026-03-26 22:04:57,581 [INFO] 
+--- Region Metrics ---
+2026-03-26 22:04:57,581 [INFO] Files evaluated : 1438
+2026-03-26 22:04:57,581 [INFO] Region Accuracy : 0.2475
+2026-03-26 22:04:58,033 [INFO] Saved → results/plots\Clip_confusion_matrix.png
+2026-03-26 22:04:58,242 [INFO] Saved → results/plots\Clip_movement_metrics.png
+2026-03-26 22:04:58,996 [INFO] Saved → results/plots\Clip_spatial_distribution.png
+2026-03-26 22:05:09,960 [INFO] Saved → results/plots\Clip_spatial_heatmaps.png
+2026-03-26 22:05:09,960 [INFO] Spatial Histogram Intersection — Mean: 0.2453
+2026-03-26 22:05:09,965 [INFO]
+===== Mouse Only =====
+2026-03-26 22:05:10,024 [INFO] Found 917 result files
+2026-03-26 22:05:38,248 [INFO] Trajectory — AD:0.1683  RMSE:0.1898  IoU:0.2021
+2026-03-26 22:05:46,477 [INFO] 
+--- Movement Metrics ---
+2026-03-26 22:05:46,484 [INFO] TP:251116  TN:1998  FP:5912  FN:5579
+2026-03-26 22:05:46,486 [INFO] P:0.977  R:0.978  F1:0.978  Acc:0.957
+2026-03-26 22:06:03,278 [INFO] 
+--- Region Metrics ---
+2026-03-26 22:06:03,278 [INFO] Files evaluated : 917
+2026-03-26 22:06:03,278 [INFO] Region Accuracy : 0.5507
+2026-03-26 22:06:03,526 [INFO] Saved → results/plots\Mouse_Only_confusion_matrix.png
+2026-03-26 22:06:03,707 [INFO] Saved → results/plots\Mouse_Only_movement_metrics.png
+2026-03-26 22:06:04,373 [INFO] Saved → results/plots\Mouse_Only_spatial_distribution.png
+2026-03-26 22:06:09,451 [INFO] Saved → results/plots\Mouse_Only_spatial_heatmaps.png
+2026-03-26 22:06:09,463 [INFO] Spatial Histogram Intersection — Mean: 0.1412
+2026-03-26 22:06:09,463 [INFO]
+===== OCR_ASR_Semanctic =====
+2026-03-26 22:06:09,515 [INFO] Found 1393 result files
+2026-03-26 22:06:39,217 [INFO] Trajectory — AD:0.1774  RMSE:0.2185  IoU:0.3255
+2026-03-26 22:06:55,091 [INFO] 
+--- Movement Metrics ---
+2026-03-26 22:06:55,091 [INFO] TP:3078  TN:114004  FP:19954  FN:14051
+2026-03-26 22:06:55,091 [INFO] P:0.134  R:0.180  F1:0.153  Acc:0.775
+2026-03-26 22:07:08,416 [INFO] 
+--- Region Metrics ---
+2026-03-26 22:07:08,416 [INFO] Files evaluated : 1393
+2026-03-26 22:07:08,416 [INFO] Region Accuracy : 0.6589
+2026-03-26 22:07:08,649 [INFO] Saved → results/plots\OCR_ASR_Semanctic_confusion_matrix.png
+2026-03-26 22:07:08,819 [INFO] Saved → results/plots\OCR_ASR_Semanctic_movement_metrics.png
+2026-03-26 22:07:09,496 [INFO] Saved → results/plots\OCR_ASR_Semanctic_spatial_distribution.png
+2026-03-26 22:07:14,584 [INFO] Saved → results/plots\OCR_ASR_Semanctic_spatial_heatmaps.png
+2026-03-26 22:07:14,584 [INFO] Spatial Histogram Intersection — Mean: 0.2000
+2026-03-26 22:07:14,584 [INFO]
+===== OCR Only =====
+2026-03-26 22:07:14,674 [INFO] Found 995 result files
+2026-03-26 22:07:38,482 [INFO] Trajectory — AD:0.4920  RMSE:0.5035  IoU:0.0001
+2026-03-26 22:07:46,014 [INFO] 
+--- Movement Metrics ---
+2026-03-26 22:07:46,016 [INFO] TP:13  TN:7904  FP:1  FN:259185
+2026-03-26 22:07:46,016 [INFO] P:0.929  R:0.000  F1:0.000  Acc:0.030
+2026-03-26 22:08:00,924 [INFO] 
+--- Region Metrics ---
+2026-03-26 22:08:00,924 [INFO] Files evaluated : 995
+2026-03-26 22:08:00,924 [INFO] Region Accuracy : 0.7050
+2026-03-26 22:08:01,223 [INFO] Saved → results/plots\OCR_Only_confusion_matrix.png
+2026-03-26 22:08:01,360 [INFO] Saved → results/plots\OCR_Only_movement_metrics.png
+2026-03-26 22:08:01,877 [INFO] Saved → results/plots\OCR_Only_spatial_distribution.png
+2026-03-26 22:08:16,313 [INFO] Saved → results/plots\OCR_Only_spatial_heatmaps.png
+2026-03-26 22:08:16,315 [INFO] Spatial Histogram Intersection — Mean: 0.0000
+2026-03-26 22:08:16,315 [INFO]
+===== OCR + ASR =====
+2026-03-26 22:08:16,387 [INFO] Found 995 result files
+2026-03-26 22:08:38,434 [INFO] Trajectory — AD:0.1786  RMSE:0.2033  IoU:0.1179
+2026-03-26 22:08:46,130 [INFO]
+--- Movement Metrics ---
+2026-03-26 22:08:46,132 [INFO] TP:68139  TN:6274  FP:1631  FN:191059
+2026-03-26 22:08:46,132 [INFO] P:0.977  R:0.263  F1:0.414  Acc:0.279
+2026-03-26 22:09:00,269 [INFO]
+--- Region Metrics ---
+2026-03-26 22:09:00,269 [INFO] Files evaluated : 995
+2026-03-26 22:09:00,269 [INFO] Region Accuracy : 0.6726
+2026-03-26 22:09:00,487 [INFO] Saved → results/plots\OCR_+_ASR_confusion_matrix.png
+2026-03-26 22:09:00,660 [INFO] Saved → results/plots\OCR_+_ASR_movement_metrics.png
+2026-03-26 22:09:01,204 [INFO] Saved → results/plots\OCR_+_ASR_spatial_distribution.png
+2026-03-26 22:09:07,463 [INFO] Saved → results/plots\OCR_+_ASR_spatial_heatmaps.png
+2026-03-26 22:09:07,463 [INFO] Spatial Histogram Intersection — Mean: 0.0726
