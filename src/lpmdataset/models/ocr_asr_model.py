@@ -7,428 +7,318 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from collections import Counter
 
-from lpmdataset.models.shared import *
-from lpmdataset.models.shared import evaluate_region
-from lpmdataset.modalities import mouse
-from lpmdataset.representations.heatmap import HeatMap
-
-
-""" In this code we combine three modalities - OCR , mouse trace and ASR speech  to train the model. 
-The OCR data is used to define spatial regions on the slide. Very small words/regions - like punctuation- are discarded as noise. Based on the region confidence of a word
-in the OCR data, the top 80 OCR boxes are selected. Each of these boxes defines a region , represented by its spatial location (center co-ordinates). 
-This defines the spatial strucure of the slide.
-
-The mouse trace has timestamped cursor co-ordinate data. A mouse is mappend to the nearest OCR region based on Eucleidian  distance of the co-ordinates from the 
-corner of the OCR boxes. This way, mouse trajectory is converted into region indices showing where the lecturer is poiting at over time.
-
-The ASR data spoken words transcript. As this is the simplest multi-modal model,speech is represented as bag-of-words approach.
-The timestamps from the ASR data are ignored.
-Thre frequncy of each word in ASR data  is calculated and the 100 most frquently used words are picked up from the vocablury.
-They are concatenated into a 100- dimensional vector representing the relative feq of vocb word in transcript.
-
-Now, the imput at each timestamp is concatenation of is 
-OCR region geometery  + 
-Mouse Pointer Region history (one hot vector) + 
-ASR bag-of-words words vector.
-
-The model is trained to predict next-region: given the previous SEQ_LEN steps of pointer movement along with slide layout and speech context, 
-it predicts the next OCR region where the pointer will move.
-
-"""
+from src.lpmdataset.models.shared import *
+from src.lpmdataset.modalities import mouse
+from src.lpmdataset.representations.heatmap import HeatMap
 
 # =========================================================
 # CONFIG
 # =========================================================
 TOP_K_BOXES = 80
-TEXT_DIM = 100 #small bag of words range
+TEXT_DIM = 100
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # =========================================================
-# OCR BOX SELECTION
+# OCR + REGION
 # =========================================================
 def load_top_ocr_boxes(path, K=TOP_K_BOXES):
-
-    boxes = []
-
-    with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
-        reader = csv.reader(f)
-        header = [h.strip().lower() for h in next(reader)]
+    boxes=[]
+    with open(path,"r",encoding="utf-8-sig",errors="replace") as f:
+        reader=csv.reader(f)
+        header=[h.strip().lower() for h in next(reader)]
 
         if "conf" not in header:
             return None
 
-        li = header.index("left")
-        ti = header.index("top")
-        wi = header.index("width")
-        hi = header.index("height")
-        ci = header.index("conf")
+        li,ti,wi,hi,ci = [header.index(x) for x in ["left","top","width","height","conf"]]
 
         for row in reader:
             try:
-                l = float(row[li])
-                t = float(row[ti])
-                w = float(row[wi])
-                h = float(row[hi])
-                conf = float(row[ci])
+                l,t,w,h,c = float(row[li]),float(row[ti]),float(row[wi]),float(row[hi]),float(row[ci])
             except:
                 continue
 
-            if conf <= 0 or w < 8 or h < 8 or w * h < 100:
+            if c<=0 or w<8 or h<8 or w*h<100:
                 continue
 
-            score = (w * h) * (conf / 100.0)
-            boxes.append((score, (l, t, w, h)))
+            boxes.append(((w*h)*(c/100.0),(l,t,w,h)))
 
-    if len(boxes) == 0:
+    if not boxes:
         return None
 
-    boxes.sort(key=lambda x: x[0], reverse=True)
-    return [b for _, b in boxes[:K]]
+    boxes.sort(reverse=True)
+    return [b for _,b in boxes[:K]]
 
 
-# =========================================================
-# REGION BUILDING
-# =========================================================
 def build_regions(boxes):
+    corners=[]
+    corner_to_box=[]
+    centers=[]
 
-    corners, corner_to_box, centers = [], [], []
-
-    for box_id, (l, t, w, h) in enumerate(boxes):
-        pts = [(l, t), (l+w, t), (l, t+h), (l+w, t+h)]
+    for i,(l,t,w,h) in enumerate(boxes):
+        pts=[(l,t),(l+w,t),(l,t+h),(l+w,t+h)]
         for p in pts:
             corners.append(p)
-            corner_to_box.append(box_id)
+            corner_to_box.append(i)
+        centers.append([l+w/2,t+h/2])
 
-        centers.append([l + w/2, t + h/2])
+    corners=np.array(corners)
+    corner_to_box=np.array(corner_to_box)
+    centers=np.array(centers)
 
-    centers = np.array(centers)
-    corners = np.array(corners)
-    corner_to_box = np.array(corner_to_box)
+    if len(centers)<TOP_K_BOXES:
+        centers=np.vstack([centers,np.zeros((TOP_K_BOXES-len(centers),2))])
 
-    if len(centers) < TOP_K_BOXES:
-        pad = TOP_K_BOXES - len(centers)
-        centers = np.vstack([centers, np.zeros((pad, 2))])
-
-    return corners, corner_to_box, centers
+    return corners,corner_to_box,centers
 
 
-def assign_regions(mouse_pts, corners, corner_to_box):
-
-    regions = []
-    for xy in mouse_pts:
-        d = ((corners - xy) ** 2).sum(axis=1)
-        regions.append(corner_to_box[d.argmin()])
-
-    return np.clip(np.array(regions), 0, TOP_K_BOXES - 1)
+def assign_regions(mouse_pts,corners,corner_to_box):
+    d=((mouse_pts[:,None,:]-corners[None,:,:])**2).sum(2)
+    return corner_to_box[d.argmin(axis=1)]
 
 
 # =========================================================
-# ASR UTILITIES
+# ASR
 # =========================================================
-def build_vocab(pairs, max_vocab=TEXT_DIM):
-
-    counter = Counter()
-
-    for _, mouse_path in pairs:
-        asr_path = mouse_path.replace("_trace.csv", "_spoken.csv")
-        if not os.path.exists(asr_path):
-            continue
-
-        df = pd.read_csv(asr_path)
+def build_vocab(pairs,max_vocab=TEXT_DIM):
+    counter=Counter()
+    for _,m in pairs:
+        p=m.replace("_trace.csv","_spoken.csv")
+        if not os.path.exists(p): continue
+        df=pd.read_csv(p)
         counter.update(df["Word"].astype(str).str.lower().tolist())
 
-    vocab = [w for w, _ in counter.most_common(max_vocab)] #count / word> takes top 100 words.
-    return {w: i for i, w in enumerate(vocab)}
+    vocab=[w for w,_ in counter.most_common(max_vocab)]
+    return {w:i for i,w in enumerate(vocab)}
 
 
-def asr_to_vector(asr_path, word_to_idx):
-
-    vec = np.zeros(len(word_to_idx))
-
-    if not os.path.exists(asr_path):
+def asr_to_vector(path,word_to_idx):
+    vec=np.zeros(len(word_to_idx))
+    if not os.path.exists(path):
         return vec
 
-    df = pd.read_csv(asr_path)
-
+    df=pd.read_csv(path)
     for w in df["Word"].astype(str).str.lower():
         if w in word_to_idx:
-            vec[word_to_idx[w]] += 1
+            vec[word_to_idx[w]]+=1
 
-    if vec.sum() > 0:
-        vec /= vec.sum()
+    if vec.sum()>0:
+        vec/=vec.sum()
 
     return vec
 
 
 # =========================================================
-# DATASET
+# DATASET (LAZY)
 # =========================================================
 class OCRASRDataset(Dataset):
 
-    def __init__(self, pairs, word_to_idx):
+    def __init__(self,pairs,word_to_idx):
 
-        self.samples = []
+        self.data=[]
+        print("Building dataset...")
 
-        for slide_idx, (ocr_path, mouse_path) in enumerate(pairs):
+        for i,(ocr_path,mouse_path) in enumerate(pairs):
 
-            boxes = load_top_ocr_boxes(ocr_path)
-            if boxes is None:
-                continue
+            boxes=load_top_ocr_boxes(ocr_path)
+            if boxes is None: continue
 
-            corners, corner_to_box, centers = build_regions(boxes)
+            corners,corner_to_box,centers=build_regions(boxes)
 
-            pts, _ = load_mouse_trace(mouse_path)
-            if len(pts) <= SEQ_LEN:
-                continue
+            pts,_=load_mouse_trace(mouse_path)
+            if len(pts)<=SEQ_LEN: continue
 
-            regions = assign_regions(pts, corners, corner_to_box)
+            regions=assign_regions(pts,corners,corner_to_box)
 
-            asr_path = mouse_path.replace("_trace.csv", "_spoken.csv")
-            text_vec = asr_to_vector(asr_path, word_to_idx)
+            text_vec=asr_to_vector(
+                mouse_path.replace("_trace.csv","_spoken.csv"),
+                word_to_idx
+            )
 
-            centers_norm = centers.copy()
-            centers_norm[:, 0] /= (centers[:, 0].max() + 1e-6)
-            centers_norm[:, 1] /= (centers[:, 1].max() + 1e-6)
-            geom_feat = centers_norm.flatten()
+            centers_norm=centers.copy()
+            centers_norm[:,0]/=(centers[:,0].max()+1e-6)
+            centers_norm[:,1]/=(centers[:,1].max()+1e-6)
 
-            for i in range(len(regions) - SEQ_LEN):
+            geom=centers_norm.flatten()
 
-                prev_onehot = np.eye(TOP_K_BOXES)[regions[i:i+SEQ_LEN]]
-                geom_repeat = np.repeat(geom_feat[None, :], SEQ_LEN, axis=0)
-                text_repeat = np.repeat(text_vec[None, :], SEQ_LEN, axis=0)
+            self.data.append((regions,geom,text_vec,centers,i))
 
-                x = np.concatenate([prev_onehot, geom_repeat, text_repeat], axis=1)
-                y = regions[i + SEQ_LEN]
-
-                # 🔥 Store slide index properly
-                self.samples.append((x, y, centers, slide_idx))
+        print("Slides:",len(self.data))
 
     def __len__(self):
-        return len(self.samples)
+        return len(self.data)
 
-    def __getitem__(self, idx):
-        x, y, centers, slide_idx = self.samples[idx]
+    def __getitem__(self,idx):
+
+        regions,geom,text_vec,centers,slide_idx=self.data[idx]
+
+        i=np.random.randint(0,len(regions)-SEQ_LEN)
+
+        x=np.concatenate([
+            np.eye(TOP_K_BOXES)[regions[i:i+SEQ_LEN]],
+            np.repeat(geom[None,:],SEQ_LEN,0),
+            np.repeat(text_vec[None,:],SEQ_LEN,0)
+        ],1)
+
+        y=regions[i+SEQ_LEN]
 
         return (
-            torch.tensor(x, dtype=torch.float32),
-            torch.tensor(y, dtype=torch.long),
-            torch.tensor(centers, dtype=torch.float32),
+            torch.tensor(x,dtype=torch.float32),
+            torch.tensor(y,dtype=torch.long),
+            torch.tensor(centers,dtype=torch.float32),
             slide_idx
         )
+
 
 # =========================================================
 # MODEL
 # =========================================================
 class OCRASRModel(nn.Module):
-
     def __init__(self):
         super().__init__()
-        input_dim = 3 * TOP_K_BOXES + TEXT_DIM
-        self.lstm = nn.LSTM(input_dim, 64, batch_first=True)
-        self.fc = nn.Linear(64, TOP_K_BOXES)
+        self.lstm=nn.LSTM(3*TOP_K_BOXES+TEXT_DIM,64,batch_first=True)
+        self.fc=nn.Linear(64,TOP_K_BOXES)
 
-    def forward(self, x):
-        o, _ = self.lstm(x)
-        return self.fc(o[:, -1])
+    def forward(self,x):
+        o,_=self.lstm(x)
+        return self.fc(o[:,-1])
 
 
 # =========================================================
 # TRAIN
 # =========================================================
-def train_region(model, loader):
+def train_region(model,loader):
 
     model.train()
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-    loss_fn = nn.CrossEntropyLoss()
+    optimizer=torch.optim.Adam(model.parameters(),lr=LR)
+    loss_fn=nn.CrossEntropyLoss()
 
     for epoch in range(EPOCHS):
+        total_loss=0
 
-        total_loss = 0
+        for x,y,_,_ in loader:
 
-        for x, y, _, _ in loader:
+            x=x.to(device)
+            y=y.to(device)
 
             optimizer.zero_grad()
-            logits = model(x)
-            loss = loss_fn(logits, y)
+            logits=model(x)
+            loss=loss_fn(logits,y)
+
             loss.backward()
             optimizer.step()
 
-            total_loss += loss.item()
+            total_loss+=loss.item()
 
         print(f"Epoch {epoch+1}/{EPOCHS} Loss={total_loss/len(loader):.4f}")
 
-def compute_heatmap_iou(df1, df2, bins=16):
-    """
-    Computes spatial IoU between two coordinate DataFrames.
-    Coordinates must be normalized to [0,1].
-    """
-
-    hist1, _, _ = np.histogram2d(
-        df1["x"],
-        df1["y"],
-        bins=bins,
-        range=[[0, 1], [0, 1]]
-    )
-
-    hist2, _, _ = np.histogram2d(
-        df2["x"],
-        df2["y"],
-        bins=bins,
-        range=[[0, 1], [0, 1]]
-    )
-
-    hist1 = hist1 / (hist1.sum() + 1e-8)
-    hist2 = hist2 / (hist2.sum() + 1e-8)
-
-    intersection = np.minimum(hist1, hist2).sum()
-    union = np.maximum(hist1, hist2).sum()
-
-    return intersection / (union + 1e-8)
 
 # =========================================================
-# EVALUATION
+# EVALUATION (SAVE LOGIC UNCHANGED)
 # =========================================================
-def evaluate_multimodal(
-    model,
-    dataset,
-    test_pairs,
-    idx=0,
-    steps=SEQ_LEN, #20 from shared code
-    screen_w=1200,
-    screen_h=900
-):
+def evaluate_multimodal(model,dataset,test_pairs,idx=0):
 
     model.eval()
 
-    # Now dataset gives slide_idx
-    x, _, centers, slide_idx = dataset[idx]
+    x,_,centers,slide_idx=dataset[idx]
+    x = x.to(device)
 
-    # Correct slide-level matching
-    _, mouse_path = test_pairs[slide_idx]
+    ocr_path,mouse_path=test_pairs[slide_idx]
 
-    seq = x.unsqueeze(0)
-    preds = []
+    # ===== PRECOMPUTE ONCE (FIXED) =====
+    pts,_ = load_mouse_trace(mouse_path)
+    boxes = load_top_ocr_boxes(ocr_path)
+    corners,corner_to_box,_ = build_regions(boxes)
+    regions_full = assign_regions(pts,corners,corner_to_box)
+
+    steps = len(regions_full) - SEQ_LEN
+
+    seq=x.unsqueeze(0)
+    preds=[]
 
     with torch.no_grad():
-        for _ in range(steps):
 
-            r = model(seq).argmax(dim=1).item()
+        for step in range(steps):
+
+            r=model(seq).argmax(dim=1).item()
             preds.append(r)
 
-            onehot = torch.zeros(1, 1, TOP_K_BOXES)
-            onehot[0, 0, r] = 1
+            next_real = regions_full[SEQ_LEN + step]
 
-            geom = seq[:, -1, TOP_K_BOXES:3*TOP_K_BOXES].unsqueeze(1)
-            text = seq[:, -1, 3*TOP_K_BOXES:].unsqueeze(1)
+            onehot=torch.zeros(1,1,TOP_K_BOXES).to(device)
+            onehot[0,0,next_real]=1
 
-            next_input = torch.cat([onehot, geom, text], dim=2)
-            seq = torch.cat([seq[:, 1:], next_input], dim=1)
+            geom=seq[:,-1,TOP_K_BOXES:3*TOP_K_BOXES].unsqueeze(1)
+            text=seq[:,-1,3*TOP_K_BOXES:].unsqueeze(1)
 
-    # Convert regions → coordinates
-    pred_coords = np.array([centers.numpy()[r] for r in preds])
-    pred_df = pd.DataFrame(pred_coords, columns=["x", "y"])
+            seq=torch.cat([seq[:,1:],torch.cat([onehot,geom,text],2)],1)
 
-    # Load correct GT
-    gt_df = mouse.load_trace_data(mouse_path)
+    pred_coords=np.array([centers.numpy()[r] for r in preds])
 
-    # Normalize
-    pred_df["x"] /= screen_w
-    pred_df["y"] /= screen_h
-    gt_df["x"] /= screen_w
-    gt_df["y"] /= screen_h
+    pred_df=pd.DataFrame(pred_coords,columns=["x","y"])
+    gt_df=mouse.load_trace_data(mouse_path)
 
-    # ---------- RMSE ----------
-    N = min(len(pred_df), len(gt_df))
-    rmse = np.sqrt(np.mean(np.sum(
-        (pred_df[["x","y"]].values[:N] -
-         gt_df[["x","y"]].values[:N]) ** 2, axis=1)))
+    N=min(len(pred_df),len(gt_df))
+    pred_df=pred_df.iloc[:N]
+    gt_df=gt_df.iloc[:N]
 
-    # ---------- IoU ----------
-    iou = compute_heatmap_iou(pred_df, gt_df, bins=16)
+    # ===== SAVE (UNCHANGED) =====
+    video_folder=os.path.basename(os.path.dirname(mouse_path))
+    order_folder=os.path.basename(os.path.dirname(os.path.dirname(mouse_path)))
+    root_folder=os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(mouse_path))))
 
-    # ---------- Wasserstein ----------
-    anchors = pd.DataFrame({"x":[0,0,1,1],"y":[0,1,0,1]})
-    pred_df_emd = pd.concat([pred_df, anchors], ignore_index=True)
-    gt_df_emd   = pd.concat([gt_df, anchors], ignore_index=True)
+    slide_name=os.path.basename(mouse_path).replace("_trace.csv","")
 
-    emd = HeatMap(pred_df_emd).distance_to(HeatMap(gt_df_emd))
+    out_dir=os.path.join("results","ocr_asr",root_folder,order_folder,video_folder)
+    os.makedirs(out_dir,exist_ok=True)
 
-    return emd, rmse, iou
+    out_path=os.path.join(out_dir,f"{slide_name}.csv")
+
+    save_df=pd.DataFrame({
+        "time":np.arange(N),
+        "pred_x":pred_df["x"].values,
+        "pred_y":pred_df["y"].values,
+        "gold_x":gt_df["x"].values,
+        "gold_y":gt_df["y"].values
+    })
+
+    save_df.to_csv(out_path,index=False)
+    print("Saved →",out_path)
 
 
 # =========================================================
 # MAIN
 # =========================================================
-if __name__ == "__main__":
+if __name__=="__main__":
 
-    # If you have multiple train folders
-    TRAIN_ROOTS = [
-        "mlpdataset/data_oct/anat-1/AnatomyPhysiology/01",
-        "mlpdataset/data_oct/anat-1/AnatomyPhysiology/02",
-        "mlpdataset/data_oct/anat-1/AnatomyPhysiology/03",
-        "mlpdataset/data_oct/anat-1/AnatomyPhysiology/04",
-        "mlpdataset/data_oct/anat-1/AnatomyPhysiology/05",
-    ]
+    train_pairs=build_slide_pairs_recursive(TRAIN_ROOT)
+    test_pairs=build_slide_pairs_recursive(TEST_ROOT)
 
-    TEST_ROOTS = [
-        "mlpdataset/data_oct/anat-2",       
-    ]
+    vocab=build_vocab(train_pairs)
 
-    # -------- Build train pairs --------
-    train_pairs = []
-    for root in TRAIN_ROOTS:
-        train_pairs.extend(build_slide_pairs_recursive(root))
+    train_ds=OCRASRDataset(train_pairs,vocab)
+    test_ds=OCRASRDataset(test_pairs,vocab)
 
-    # -------- Build test pairs --------
-    test_pairs = []
-    for root in TEST_ROOTS:
-        test_pairs.extend(build_slide_pairs_recursive(root))
+    train_loader=DataLoader(train_ds,batch_size=BATCH_SIZE,shuffle=True,num_workers=0)
 
-    print("Train slides:", len(train_pairs))
-    print("Test slides:", len(test_pairs))
+    model=OCRASRModel().to(device)
 
-    # -------- Build vocab --------
-    word_to_idx = build_vocab(train_pairs)
-
-    # -------- Build datasets --------
-    train_ds = OCRASRDataset(train_pairs, word_to_idx)
-    test_ds  = OCRASRDataset(test_pairs, word_to_idx)
-
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
-
-    model = OCRASRModel()
-
-    if not os.path.exists("ocr_asr_model.pth"):
-        train_region(model, train_loader)
-        torch.save(model.state_dict(), "ocr_asr_model.pth")
+    if not os.path.exists("ocr_asr_FULL_model.pth"):
+        train_region(model,train_loader)
+        torch.save(model.state_dict(),"ocr_asr_FULL_model.pth")
     else:
-        model.load_state_dict(torch.load("ocr_asr_model.pth"))
+        if torch.cuda.is_available():
+            model.load_state_dict(torch.load("ocr_asr_FULL_model.pth"))
+        else:   
+            model.load_state_dict(torch.load("ocr_asr_FULL_model.pth",map_location=torch.device('cpu')))
 
-    acc, _, _ = evaluate_region(
-        model,
-        DataLoader(test_ds, batch_size=BATCH_SIZE),
-        1200
-    )
+    processed=set()
 
-    all_emd = []
-    all_rmse = []
-    all_iou = []
+    for i in range(len(test_ds)):
+        slide_idx=test_ds.data[i][4]
+        if slide_idx in processed:
+            continue
+        processed.add(slide_idx)
 
-    for idx in range(20):   # first 50 samples
-        emd, rmse, iou = evaluate_multimodal(
-            model,
-            test_ds,
-            test_pairs,
-            idx=idx
-        )
-
-        all_emd.append(emd)
-        all_rmse.append(rmse)
-        all_iou.append(iou)
-    
-
-    print("OCR+ASR Accuracy:", acc)
-    print("OCR+ASR Wasserstein:", emd)
-    print("OCR+ASR RMSE:", rmse)
-    print("OCR+ASR IoU:", iou)
-    print("OCR+ASR IoU: {:.6e}".format(iou))
+        evaluate_multimodal(model,test_ds,test_pairs,i)

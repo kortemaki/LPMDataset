@@ -1,418 +1,241 @@
-from typing import Counter
+import os, csv
 import numpy as np
-import csv
+import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from lpmdataset.models.shared import *
-from lpmdataset.models.shared import evaluate_region
-import matplotlib.pyplot as plt
-import random
-import pandas as pd
-from lpmdataset.modalities import mouse
-from lpmdataset.representations import heatmap
-from lpmdataset.representations.heatmap import HeatMap
 
+from src.lpmdataset.models.shared import *
+from src.lpmdataset.modalities import mouse
 
-
-
-# =========================================================
-# CONFIG
-# =========================================================
+# ================= CONFIG =================
 TOP_K_BOXES = 80
+SCREEN_W, SCREEN_H = 1200, 900
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # =========================================================
-# OCR BOX SELECTION (Area × Confidence)
+# OCR → CENTERS
 # =========================================================
-
-def load_top_ocr_boxes(path, K=TOP_K_BOXES):
-
+def load_ocr_regions(path, K=TOP_K_BOXES):
     boxes = []
-
     with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
         reader = csv.reader(f)
-        header = [h.strip().lower() for h in next(reader)]
-
-        if "conf" not in header:
+        try:
+            header = [h.strip().lower() for h in next(reader)]
+        except StopIteration:
             return None
 
-        li = header.index("left")
-        ti = header.index("top")
-        wi = header.index("width")
-        hi = header.index("height")
-        ci = header.index("conf")
+        req = ["left","top","width","height","conf"]
+        if not all(k in header for k in req):
+            return None
+
+        li, ti, wi, hi, ci = [header.index(k) for k in req]
 
         for row in reader:
             try:
-                l = float(row[li])
-                t = float(row[ti])
-                w = float(row[wi])
-                h = float(row[hi])
-                conf = float(row[ci])
+                l,t,w,h,c = float(row[li]),float(row[ti]),float(row[wi]),float(row[hi]),float(row[ci])
             except:
                 continue
-
-            # --- Remove bad OCR ---
-            if conf <= 0:
+            if c <= 0 or w < 8 or h < 8 or w*h < 100:
                 continue
+            boxes.append((w*h*(c/100.0),(l,t,w,h)))
 
-            # --- Remove tiny boxes ---
-            if w < 8 or h < 8:
-                continue
-
-            area = w * h
-            if area < 100:   # tiny region threshold
-                continue
-
-            # --- Score = area × confidence ---
-            score = area * (conf / 100.0)
-            boxes.append((score, (l, t, w, h)))
-
-    if len(boxes) == 0:
+    if not boxes:
         return None
 
-    boxes.sort(key=lambda x: x[0], reverse=True)
-    return [b for _, b in boxes]
+    boxes = [b for _,b in sorted(boxes, reverse=True)[:K]]
+    centers = np.array([[l+w/2, t+h/2] for (l,t,w,h) in boxes])
+
+    if len(centers) < K:
+        centers = np.vstack([centers, np.zeros((K-len(centers),2))])
+
+    centers[:,0] /= SCREEN_W
+    centers[:,1] /= SCREEN_H
+    return centers
 
 
 # =========================================================
-# BUILD CORNERS + REGION CENTERS
+# REGION ASSIGNMENT
 # =========================================================
-def build_regions(boxes):
-
-    corners = []
-    corner_to_box = []
-    centers = []
-
-    for box_id, (l, t, w, h) in enumerate(boxes):
-
-        pts = [
-            (l, t),
-            (l + w, t),
-            (l, t + h),
-            (l + w, t + h)
-        ]
-
-        for p in pts:
-            corners.append(p)
-            corner_to_box.append(box_id)
-
-        centers.append([l + w/2, t + h/2])
-
-    corners = np.array(corners)
-    corner_to_box = np.array(corner_to_box)
-    centers = np.array(centers)
-
-    # --- Ensure fixed number of regions ---
-    if len(centers) > TOP_K_BOXES:
-        centers = centers[:TOP_K_BOXES]
-        # keep only matching corners
-        valid_mask = corner_to_box < TOP_K_BOXES
-        corners = corners[valid_mask]
-        corner_to_box = corner_to_box[valid_mask]
-
-    # Pad to fixed TOP_K regions
-    if len(centers) < TOP_K_BOXES:
-        pad = TOP_K_BOXES - len(centers)
-        centers = np.vstack([centers, np.zeros((pad, 2))])
-
-    return corners, corner_to_box, centers
+def assign_regions(mouse_pts, centers):
+    d = ((mouse_pts[:,None,:] - centers[None,:,:])**2).sum(axis=2)
+    return np.argmin(d, axis=1)
 
 
 # =========================================================
-# ASSIGN REGION (nearest corner → fused box)
-# =========================================================
-def assign_regions(mouse_pts, corners, corner_to_box):
-
-    regions = []
-
-    for xy in mouse_pts:
-        d = ((corners - xy) ** 2).sum(axis=1)
-        idx = d.argmin()
-        regions.append(corner_to_box[idx])
-
-    regions = np.array(regions)
-    regions = np.clip(regions, 0, TOP_K_BOXES - 1)
-
-    return regions
-
-
-# =========================================================
-# DATASET
+# DATASET (LAZY)
 # =========================================================
 class OCRRegionDataset(Dataset):
-
     def __init__(self, pairs):
-
-        self.samples = []
-        skipped = 0
+        self.data = []
+        print("Building dataset...")
 
         for ocr_path, mouse_path in pairs:
-
-            # --- Load OCR boxes ---
-            boxes = load_top_ocr_boxes(ocr_path)
-            if boxes is None:
-                skipped += 1
+            centers = load_ocr_regions(ocr_path)
+            if centers is None:
                 continue
 
-            # --- Build regions ---
-            corners, corner_to_box, centers = build_regions(boxes)
-
-            # --- Load mouse ---
             pts, _ = load_mouse_trace(mouse_path)
             if len(pts) <= SEQ_LEN:
                 continue
 
-            # --- Assign mouse → region ---
-            regions = assign_regions(pts, corners, corner_to_box)
+            regions = assign_regions(pts, centers)
+            self.data.append((regions, centers, ocr_path, mouse_path))
 
-            # --- Normalize geometry (per axis, stable) ---
-            centers_norm = centers.copy()
+        print("Slides loaded:", len(self.data))
 
-            max_x = np.max(centers[:, 0]) + 1e-6
-            max_y = np.max(centers[:, 1]) + 1e-6
-
-            centers_norm[:, 0] /= max_x
-            centers_norm[:, 1] /= max_y
-
-            geom_feat = centers_norm.flatten()   # shape = (2K,)
-
-            # --- Build sequences ---
-            for i in range(len(regions) - SEQ_LEN):
-
-                # Previous region one-hot (temporal signal)
-                prev_r = regions[i:i+SEQ_LEN]
-                prev_onehot = np.eye(TOP_K_BOXES)[prev_r]   # (seq, K)
-
-                # Repeat geometry across sequence
-                geom_repeat = np.repeat(geom_feat[None, :], SEQ_LEN, axis=0)
-
-                # Final feature = [prev_region, geometry]
-                x = np.concatenate([prev_onehot, geom_repeat], axis=1)
-
-                y = regions[i + SEQ_LEN]
-
-                self.samples.append((x, y, centers, ocr_path))
-
-        print("Skipped slides (bad OCR):", skipped)
-        print("Total samples:", len(self.samples))
-
-    #  REQUIRED by PyTorch
     def __len__(self):
-        return len(self.samples)
+        return len(self.data)
 
-    #  REQUIRED by PyTorch
     def __getitem__(self, idx):
-        x, y, centers, ocr_path = self.samples[idx]
+        regions, centers, ocr_path, mouse_path = self.data[idx]
+
+        i = np.random.randint(0, len(regions) - SEQ_LEN)
+        geom = centers.flatten()
+
+        x = np.concatenate([
+            np.eye(TOP_K_BOXES)[regions[i:i+SEQ_LEN]],
+            np.repeat(geom[None,:], SEQ_LEN, axis=0)
+        ], axis=1)
+
+        y = regions[i+SEQ_LEN]
 
         return (
             torch.tensor(x, dtype=torch.float32),
             torch.tensor(y, dtype=torch.long),
             torch.tensor(centers, dtype=torch.float32),
-            ocr_path
-)
+            mouse_path
+        )
+
 
 # =========================================================
 # MODEL
 # =========================================================
 class OCRRegionModel(nn.Module):
-
     def __init__(self):
         super().__init__()
-        self.lstm = nn.LSTM(input_size=3 * TOP_K_BOXES, hidden_size=64, batch_first=True)
-        self.fc = nn.Linear(64, TOP_K_BOXES)
+        self.lstm = nn.LSTM(3*TOP_K_BOXES, 16, batch_first=True)
+        self.fc = nn.Linear(16, TOP_K_BOXES)
 
     def forward(self, x):
-        o, _ = self.lstm(x)
-        return self.fc(o[:, -1])
+        o,_ = self.lstm(x)
+        return self.fc(o[:,-1])
+
+
 # =========================================================
 # TRAIN
 # =========================================================
 def train_region(model, loader):
-
     opt = torch.optim.Adam(model.parameters(), lr=LR)
     loss_fn = nn.CrossEntropyLoss()
 
+    model.train()
+
     for ep in range(EPOCHS):
-        total = 0
-        for x, y, _, _ in loader:
+        tot = 0
+
+        for x,y,_,_ in loader:
+            x = x.to(device)
+            y = y.to(device)
+
             opt.zero_grad()
-            pred = model(x)
-            loss = loss_fn(pred, y)
+            loss = loss_fn(model(x), y)
             loss.backward()
             opt.step()
-            total += loss.item()
 
-        print(f"Epoch {ep+1}/{EPOCHS} Loss={total/len(loader):.4f}")
+            tot += loss.item()
 
-def predict_region_sequence(model, x0, centers, steps=200):
-    model.eval()
-    seq = x0.unsqueeze(0)   # shape (1, SEQ_LEN, 3*K)
-    preds = []
+        print(f"Epoch {ep+1}: {tot/len(loader):.4f}")
 
-    for _ in range(steps):
-        with torch.no_grad():
-            logits = model(seq)
-            region_id = logits.argmax(dim=1).item()
-            preds.append(region_id)
 
-        # Build next input
-        onehot = torch.zeros(1, 1, TOP_K_BOXES)
-        onehot[0, 0, region_id] = 1
+# =========================================================
+# SAVE FULL SLIDE (STRUCTURED)
+# =========================================================
+def generate_full_slide_predictions_ocr(model, test_pairs):
 
-        geom = seq[:, -1, TOP_K_BOXES:]  # geometry stays constant
-        geom = geom.unsqueeze(1)
-
-        next_x = torch.cat([onehot, geom], dim=2)
-        seq = torch.cat([seq[:, 1:], next_x], dim=1)
-
-    return preds
-
-def region_ids_to_coords(region_ids, centers):
-    coords = [centers[r] for r in region_ids]
-    xs = [c[0] for c in coords]
-    ys = [c[1] for c in coords]
-    return np.array(xs), np.array(ys)
-
-def compute_heatmap_iou(df1, df2, bins=8):
-    """
-    Computes spatial IoU between two coordinate DataFrames.
-    Both must contain normalized x,y in [0,1].
-    """
-
-    hist1, _, _ = np.histogram2d(
-        df1["x"],
-        df1["y"],
-        bins=bins,
-        range=[[0, 1], [0, 1]]
-    )
-
-    hist2, _, _ = np.histogram2d(
-        df2["x"],
-        df2["y"],
-        bins=bins,
-        range=[[0, 1], [0, 1]]
-    )
-
-    # Normalize to distributions
-    hist1 = hist1 / (hist1.sum() + 1e-8)
-    hist2 = hist2 / (hist2.sum() + 1e-8)
-
-    intersection = np.minimum(hist1, hist2).sum()
-    union = np.maximum(hist1, hist2).sum()
-
-    return intersection / (union + 1e-8)
-
-def evaluate_ocr_baseline(
-    model,
-    dataset,
-    test_pairs,
-    idx=0,
-    steps=300,
-    screen_w=1200,
-    screen_h=900
-):
-    """
-    Returns:
-        emd  (Wasserstein distance)
-        rmse (normalized spatial RMSE)
-        iou  (heatmap IoU)
-    """
+    print("Generating OCR-only predictions...")
 
     model.eval()
 
-    # -------------------------------------------------
-    # 1. Get dataset sample
-    # -------------------------------------------------
-    x, y, centers, _ = dataset[idx]
-    _, mouse_path = test_pairs[idx]
+    for (ocr_path, mouse_path) in test_pairs:
 
-    centers = centers.numpy()
+        try:
+            centers = load_ocr_regions(ocr_path)
+            if centers is None:
+                continue
 
-    # -------------------------------------------------
-    # 2. Predict region sequence
-    # -------------------------------------------------
-    with torch.no_grad():
-        pred_ids = predict_region_sequence(
-            model,
-            x,
-            centers,
-            steps=steps
-        )
+            pts, _ = load_mouse_trace(mouse_path)
+            if len(pts) <= SEQ_LEN:
+                continue
 
-    # -------------------------------------------------
-    # 3. Convert region IDs → coordinates
-    # -------------------------------------------------
-    px, py = region_ids_to_coords(pred_ids, centers)
+            regions = assign_regions(pts, centers)
+            geom = centers.flatten()
 
-    pred_df = pd.DataFrame({
-        "timestamp": np.arange(len(px)) * 0.001,
-        "x": px,
-        "y": py
-    })
+            x = np.concatenate([
+                np.eye(TOP_K_BOXES)[regions[:SEQ_LEN]],
+                np.repeat(geom[None,:], SEQ_LEN, axis=0)
+            ], axis=1)
 
-    # -------------------------------------------------
-    # 4. Load ground truth
-    # -------------------------------------------------
-    gt_df = mouse.load_trace_data(mouse_path)
+            seq = torch.tensor(x, dtype=torch.float32).unsqueeze(0).to(device)
 
-    # -------------------------------------------------
-    # 5. Normalize BOTH to [0,1]
-    # -------------------------------------------------
-    pred_df["x"] /= screen_w
-    pred_df["y"] /= screen_h
+            preds = []
+            steps = len(regions) - SEQ_LEN
 
-    gt_df["x"] /= screen_w
-    gt_df["y"] /= screen_h
+            for step in range(steps):
+                with torch.no_grad():
+                    r = model(seq).argmax(1).item()
 
-    # -------------------------------------------------
-    # 6. Compute RMSE BEFORE adding anchors
-    # -------------------------------------------------
-    pred_coords = pred_df[["x", "y"]].values
-    gt_coords   = gt_df[["x", "y"]].values
+                preds.append(r)
 
-    N = min(len(pred_coords), len(gt_coords))
-    pred_coords = pred_coords[:N]
-    gt_coords   = gt_coords[:N]
+                # teacher forcing
+                next_real = regions[SEQ_LEN + step]
 
-    rmse = np.sqrt(np.mean(np.sum((pred_coords - gt_coords) ** 2, axis=1)))
+                onehot = torch.zeros(1,1,TOP_K_BOXES).to(device)
+                onehot[0,0,next_real] = 1
 
-    # -------------------------------------------------
-    # 7. Add anchors (for consistent histograms)
-    # -------------------------------------------------
-    anchors = pd.DataFrame({
-        "timestamp": [-1, -1, -1, -1],
-        "x": [0.0, 0.0, 1.0, 1.0],
-        "y": [0.0, 1.0, 0.0, 1.0]
-    })
+                geom_t = torch.tensor(geom, dtype=torch.float32).view(1,1,-1).to(device)
 
-    pred_df = pd.concat([pred_df, anchors], ignore_index=True)
-    gt_df   = pd.concat([gt_df, anchors], ignore_index=True)
+                next_input = torch.cat([onehot, geom_t], dim=2)
+                seq = torch.cat([seq[:,1:], next_input], dim=1)
 
-    pred_df = pred_df.astype(float)
-    gt_df   = gt_df.astype(float)
+            pred_coords = np.array([centers[r] for r in preds])
+            gt = mouse.load_trace_data(mouse_path)
 
-    # -------------------------------------------------
-    # 8. Build HeatMaps
-    # -------------------------------------------------
-    pred_hm = HeatMap(pred_df)
-    gt_hm   = HeatMap(gt_df)
+            N = min(len(pred_coords), len(gt))
 
-    pred_hm.upsample()
-    gt_hm.upsample()
+            pred_coords = pred_coords[:N]
+            gt = gt.iloc[:N]
 
-    # -------------------------------------------------
-    # 9. Wasserstein
-    # -------------------------------------------------
-    emd = pred_hm.distance_to(gt_hm)
+            # ===== SAME STRUCTURE =====
+            parts = mouse_path.split(os.sep)
+            video = parts[-2]
+            order = parts[-3]
+            root  = parts[-4]
 
-    # -------------------------------------------------
-    # 10. IoU (standalone version)
-    # -------------------------------------------------
-    iou = compute_heatmap_iou(pred_df, gt_df, bins=8)
+            slide_name = os.path.basename(mouse_path).replace("_trace.csv","")
 
-    return emd, rmse, iou
+            out_dir = os.path.join("results","ocr_only",root,order,video)
+            os.makedirs(out_dir, exist_ok=True)
+
+            df = pd.DataFrame({
+                "time": np.arange(N),
+                "pred_x": pred_coords[:,0],
+                "pred_y": pred_coords[:,1],
+                "gold_x": gt.x.values,
+                "gold_y": gt.y.values
+            })
+
+            out_path = os.path.join(out_dir, f"{slide_name}.csv")
+            df.to_csv(out_path, index=False)
+
+            print(f"Saved: {out_path}")
+
+        except Exception as e:
+            print("Skipping:", e)
+
+    print("Done.")
+
 
 # =========================================================
 # MAIN
@@ -425,61 +248,22 @@ if __name__ == "__main__":
     train_ds = OCRRegionDataset(train_pairs)
     test_ds  = OCRRegionDataset(test_pairs)
 
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
-    test_loader  = DataLoader(test_ds, batch_size=BATCH_SIZE)
-
-    model = OCRRegionModel()
-    MODEL_PATH = f"ocr_only_unimodal_model_lr{LR}.pth"
-
-    if os.path.exists(MODEL_PATH ):
-        try:
-            print("Loading saved model...")
-            model.load_state_dict(torch.load(MODEL_PATH ))
-        except Exception as e:
-            print("Error loading model:")
-            print(e)
-            print("Model incompatible → retraining.")
-            train_region(model, train_loader)
-    else:
-        print("Training model...")
-        train_region(model, train_loader)
-        torch.save(model.state_dict(), MODEL_PATH)
-        print("Model saved.")
-# --- Evaluate ---
-    acc, l2, norm_l2 = evaluate_region(
-    model,
-    test_loader,
-    screen_width=1200   # same width as mouse eval
-    #same width as mouse eval
-) 
-    
-  
-
-print("Train slides:", len(train_pairs))
-print("Test slides:", len(test_pairs))
-
-
-all_dists = []
-all_rmse = []
-all_iou = []
-
-for i in range(20):
-    d, rmse, iou = evaluate_ocr_baseline(
-        model,
-        test_ds,
-        test_pairs,
-        idx=i,
-        steps=SEQ_LEN
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=0
     )
 
-    all_dists.append(d)
-    all_rmse.append(rmse)
-    all_iou.append(iou)
-print("Train slides:", len(train_pairs))
-print("Test slides:", len(test_pairs))
-print("Mean Wasserstein distance:", np.mean(all_dists))
-print("Mean RMSE (normalized):", np.mean(all_rmse))
-print("Mean IoU:", np.mean(all_iou))
-print("OCR → Region Accuracy:", acc)
+    model = OCRRegionModel().to(device)
 
+    if os.path.exists("ocr_FULL_model.pth"):
+        model.load_state_dict(torch.load("ocr_FULL_model.pth"))
+    else:
+        train_region(model, train_loader)
+        torch.save(model.state_dict(),"ocr_FULL_model.pth")
 
+    print("Training complete.")
+
+    # ===== SAVE RESULTS =====
+    generate_full_slide_predictions_ocr(model, test_pairs)

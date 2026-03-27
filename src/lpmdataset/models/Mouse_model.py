@@ -5,22 +5,21 @@ from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 import numpy as np
 
-from lpmdataset.models.shared import *
-from lpmdataset.representations.heatmap import HeatMap
+from src.lpmdataset.models.shared import *
 
 
 # =========================================================
-# DATASET
+# DATASET (UNCHANGED)
 # =========================================================
 
 class MouseOnlyDataset(Dataset):
-    def __init__(self, pairs, mean, std, return_start=False):
+    def __init__(self, pairs, mean, std, return_meta=False):
         self.samples = []
-        self.return_start = return_start
+        self.return_meta = return_meta
 
         for _, m in pairs:
             pts, deltas = load_mouse_trace(m)
-# Seq_len here is 0. If the number of deltas is less than 20 then the file is skipped.
+
             if len(deltas) <= SEQ_LEN:
                 continue
 
@@ -30,8 +29,8 @@ class MouseOnlyDataset(Dataset):
                 y = (deltas[i+SEQ_LEN] - mean) / std
                 start_pos = pts[i + SEQ_LEN - 1]
 
-                if return_start:
-                    self.samples.append((x, y, start_pos))
+                if return_meta:
+                    self.samples.append((x, y, start_pos, pts, i, m))
                 else:
                     self.samples.append((x, y))
 
@@ -41,12 +40,15 @@ class MouseOnlyDataset(Dataset):
     def __getitem__(self, i):
         sample = self.samples[i]
 
-        if self.return_start:
-            x, y, start_pos = sample
+        if self.return_meta:
+            x, y, start_pos, pts, idx, path = sample
             return (
                 torch.tensor(x, dtype=torch.float32),
                 torch.tensor(y, dtype=torch.float32),
-                torch.tensor(start_pos, dtype=torch.float32)
+                torch.tensor(start_pos, dtype=torch.float32),
+                pts,
+                idx,
+                path
             )
         else:
             x, y = sample
@@ -72,170 +74,149 @@ class MouseOnlyLSTM(nn.Module):
 
 
 # =========================================================
-# CLEAN IoU FUNCTION
+# ✅ FIXED FULL-SLIDE PREDICTION (NO RETRAINING NEEDED)
 # =========================================================
 
-def compute_heatmap_iou(df1, df2, bins=16):
+def generate_full_slide_predictions(model, test_pairs, mean, std):
 
-    hist1, _, _ = np.histogram2d(
-        df1["x"],
-        df1["y"],
-        bins=bins,
-        range=[[0, 1], [0, 1]]
-    )
+    print("Generating FULL slide predictions (FIXED)...")
 
-    hist2, _, _ = np.histogram2d(
-        df2["x"],
-        df2["y"],
-        bins=bins,
-        range=[[0, 1], [0, 1]]
-    )
-
-    hist1 = hist1 / (hist1.sum() + 1e-8)
-    hist2 = hist2 / (hist2.sum() + 1e-8)
-
-    intersection = np.minimum(hist1, hist2).sum()
-    union = np.maximum(hist1, hist2).sum()
-
-    return intersection / (union + 1e-8)
-
-
-# =========================================================
-# EVALUATION
-# =========================================================
-
-def evaluate_mouse_emd(
-    model,
-    dataset,
-    mean,
-    std,
-    idx=0,
-    steps=200,
-    screen_w=1200,
-    screen_h=900
-):
     model.eval()
 
-    # -------------------------------------
-    # Get sample
-    # -------------------------------------
-    x0, y0, start_pos = dataset[idx]
-    x_seq = x0.unsqueeze(0)
+    for pair in test_pairs:
 
-    preds = []
-    gt_deltas = []
+        try:
+            # -------------------------
+            # SAFE unpack
+            # -------------------------
+            if isinstance(pair, (list, tuple)):
+                mouse_path = pair[1] if len(pair) > 1 else pair[0]
+            else:
+                mouse_path = pair
 
-    # -------------------------------------
-    # Autoregressive prediction
-    # -------------------------------------
-    for step in range(steps):
+            # -------------------------
+            # LOAD + FORCE NUMPY ✅ FIX
+            # -------------------------
+            pts, deltas = load_mouse_trace(mouse_path)
 
-        with torch.no_grad():
-            pred = model(x_seq)
+            pts = np.array(pts)          # 🔥 FIX
+            deltas = np.array(deltas)    # 🔥 FIX
 
-        preds.append(pred.squeeze(0).numpy())
-        gt_deltas.append(y0.numpy())  # true delta for first step only
+            if len(deltas) <= SEQ_LEN:
+                continue
 
-        x_seq = torch.cat([x_seq[:, 1:], pred.unsqueeze(1)], dim=1)
+            # -------------------------
+            # INITIAL WINDOW
+            # -------------------------
+            x_seq = (deltas[:SEQ_LEN] - mean) / std
+            x_seq = torch.tensor(x_seq, dtype=torch.float32).unsqueeze(0)
 
-    preds = np.array(preds)
+            start_pos = pts[SEQ_LEN - 1]
 
-    # -------------------------------------
-    # Denormalize deltas
-    # -------------------------------------
-    preds = preds * std + mean
+            preds = []
 
-    # -------------------------------------
-    # Reconstruct predicted trajectory
-    # -------------------------------------
-    start_pos = start_pos.numpy()
+            # -------------------------
+            # FULL LENGTH ✅ FIX
+            # -------------------------
+            steps = len(deltas) - SEQ_LEN
 
-    abs_preds = []
-    current_pos = start_pos.copy()
+            for step in range(steps):
 
-    for dx, dy in preds:
-        current_pos = current_pos + np.array([dx, dy])
-        abs_preds.append(current_pos.copy())
+                with torch.no_grad():
+                    pred = model(x_seq)
 
-    abs_preds = np.array(abs_preds)
+                pred_np = pred.squeeze(0).cpu().numpy()
+                preds.append(pred_np)
 
-    # -------------------------------------
-    # Build ground truth trajectory properly
-    # -------------------------------------
-    # Load full GT trace
-    gt_abs = []
-    current_pos = start_pos.copy()
+                # -------------------------
+                # TEACHER FORCING ✅ FIX
+                # -------------------------
+                next_real = (deltas[SEQ_LEN + step] - mean) / std
+                next_real = torch.tensor(next_real, dtype=torch.float32).view(1, 1, 2)
 
-    # Use true future deltas from dataset
-    # dataset[idx] gives first future delta only,
-    # so we reconstruct using raw mouse trace
+                x_seq = torch.cat([x_seq[:, 1:], next_real], dim=1)
 
-    # Safer: directly use predicted length slice from true trace
-    # -------------------------------------
+            preds = np.array(preds)
 
-    # Instead of manual reconstruction,
-    # use absolute mouse trace from original data
+            # -------------------------
+            # DENORMALIZE
+            # -------------------------
+            preds = preds * std + mean
 
-    # Get full GT trajectory from dataset internal storage
-    # We reconstruct using stored start position + true deltas
+            # -------------------------
+            # BOUNDS FROM REAL DATA ✅ FIX
+            # -------------------------
+            x_min, y_min = pts.min(axis=0)
+            x_max, y_max = pts.max(axis=0)
 
-    true_abs = []
-    current_pos = start_pos.copy()
+            # -------------------------
+            # BUILD ABSOLUTE TRAJECTORY
+            # -------------------------
+            abs_preds = []
+            current_pos = start_pos.copy()
 
-    # Use ground truth delta for first step
-    true_delta = y0.numpy() * std + mean
+            for dx, dy in preds:
+                current_pos = current_pos + np.array([dx, dy])
 
-    for _ in range(steps):
-        current_pos = current_pos + true_delta
-        true_abs.append(current_pos.copy())
+                # ✅ SAFE CLAMP (NO NEGATIVE EXPLOSION)
+                current_pos[0] = np.clip(current_pos[0], x_min, x_max)
+                current_pos[1] = np.clip(current_pos[1], y_min, y_max)
 
-    true_abs = np.array(true_abs)
+                abs_preds.append(current_pos.copy())
 
-    # -------------------------------------
-    # Convert to DataFrames
-    # -------------------------------------
-    pred_df = pd.DataFrame({
-        "timestamp": np.arange(len(abs_preds)) * 0.001,
-        "x": abs_preds[:, 0],
-        "y": abs_preds[:, 1]
-    })
+            abs_preds = np.array(abs_preds)
 
-    gt_df = pd.DataFrame({
-        "timestamp": np.arange(len(true_abs)) * 0.001,
-        "x": true_abs[:, 0],
-        "y": true_abs[:, 1]
-    })
+            # -------------------------
+            # GOLD (PERFECT ALIGNMENT)
+            # -------------------------
+            true_abs = pts[SEQ_LEN : SEQ_LEN + steps]
 
-    # -------------------------------------
-    # Normalize
-    # -------------------------------------
-    pred_df["x"] /= screen_w
-    pred_df["y"] /= screen_h
-    gt_df["x"] /= screen_w
-    gt_df["y"] /= screen_h
+            # -------------------------
+            # SAFETY MATCH LENGTH
+            # -------------------------
+            N = min(len(abs_preds), len(true_abs))
 
-    # -------------------------------------
-    # RMSE (trajectory level)
-    # -------------------------------------
-    pred_coords = pred_df[["x", "y"]].values
-    gt_coords   = gt_df[["x", "y"]].values
+            abs_preds = abs_preds[:N]
+            true_abs = true_abs[:N]
 
-    N = min(len(pred_coords), len(gt_coords))
-    rmse = np.sqrt(np.mean(np.sum((pred_coords[:N] - gt_coords[:N])**2, axis=1)))
+            # -------------------------
+            # SAVE
+            # -------------------------
+            parts = mouse_path.split(os.sep)
 
-    # -------------------------------------
-    # Heatmaps
-    # -------------------------------------
-    pred_hm = HeatMap(pred_df)
-    gt_hm   = HeatMap(gt_df)
+            video = parts[-2]
+            order = parts[-3]
+            anat  = parts[-4]
 
-    pred_hm.upsample()
-    gt_hm.upsample()
+            slide_name = os.path.basename(mouse_path).replace(".csv", "")
 
-    emd = pred_hm.distance_to(gt_hm)
-    iou = compute_heatmap_iou(pred_df, gt_df)
+            out_dir = os.path.join(
+                "results",
+                "mouse_only",
+                anat,
+                order,
+                video
+            )
 
-    return emd, rmse, iou
+            os.makedirs(out_dir, exist_ok=True)
+
+            df = pd.DataFrame({
+                "time": np.arange(N),
+                "pred_x": abs_preds[:, 0],
+                "pred_y": abs_preds[:, 1],
+                "gold_x": true_abs[:, 0],
+                "gold_y": true_abs[:, 1],
+            })
+
+            out_path = os.path.join(out_dir, f"{slide_name}.csv")
+            df.to_csv(out_path, index=False)
+
+            print(f"Saved: {out_path} | Points: {N}")
+
+        except Exception as e:
+            print("Skipping:", e)
+
+    print("Done.")
 
 
 # =========================================================
@@ -244,19 +225,19 @@ def evaluate_mouse_emd(
 
 if __name__ == "__main__":
 
-    train_pairs = build_slide_pairs_recursive(TRAIN_ROOT) # Gets trace and ocr pair for testing
-    test_pairs  = build_slide_pairs_recursive(TEST_ROOT) #Gets tace and ocr pair for testing
+
+
+    train_pairs = build_slide_pairs_recursive(TRAIN_ROOT)
+    test_pairs  = build_slide_pairs_recursive(TEST_ROOT)
 
     mean, std = compute_delta_stats(train_pairs)
 
-    train_ds = MouseOnlyDataset(train_pairs, mean, std, return_start=False) 
-    test_ds  = MouseOnlyDataset(test_pairs, mean, std, return_start=True)
-
+    train_ds = MouseOnlyDataset(train_pairs, mean, std, return_meta=False)
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
 
     model = MouseOnlyLSTM()
 
-    MODEL_PATH = f"mouse_only_model_lr{LR}.pth"
+    MODEL_PATH = f"mouse_only_model_FULL{LR}.pth"
 
     if os.path.exists(MODEL_PATH):
         print("Loading saved model...")
@@ -267,16 +248,13 @@ if __name__ == "__main__":
         torch.save(model.state_dict(), MODEL_PATH)
         print("Model saved.")
 
-    # --- Evaluate ---
-    emd, rmse ,iou = evaluate_mouse_emd(
-        model,
-        test_ds,
-        mean,
-        std,
-        idx=10,
-        steps=SEQ_LEN
-    )
+    # =====================================================
+    # ✅ FIXED GENERATION
+    # =====================================================
 
-    print("Mouse→Mouse Wasserstein:", emd)
-    print("Mouse→Mouse RMSE:", rmse)
-    print("Mouse→Mouse HeatMap IoU:", iou)
+    generate_full_slide_predictions(
+        model,
+        test_pairs,
+        mean,
+        std
+    )

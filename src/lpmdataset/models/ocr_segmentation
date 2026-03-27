@@ -1,0 +1,235 @@
+import os
+import json
+from glob import glob
+import pandas as pd
+
+
+# ------------------------------------------------
+# STEP 1: OCR CSV → lines (with bbox)
+# ------------------------------------------------
+def ocr_csv_to_lines(csv_path, conf_threshold=40, line_y_thresh=12):
+
+    df = pd.read_csv(csv_path)
+
+    df = df[df["conf"] > conf_threshold]
+    df = df[df["text"].notna()]
+    df = df[df["text"].str.strip() != ""]
+
+    if df.empty:
+        return []
+
+    df = df.sort_values(["top", "left"])
+
+    lines = []
+    current_line = []
+    current_y = None
+
+    for _, row in df.iterrows():
+
+        if current_y is None:
+            current_y = row["top"]
+
+        if abs(row["top"] - current_y) <= line_y_thresh:
+            current_line.append(row)
+        else:
+            lines.append(current_line)
+            current_line = [row]
+            current_y = row["top"]
+
+    if current_line:
+        lines.append(current_line)
+
+    line_objects = []
+
+    for line in lines:
+        line = sorted(line, key=lambda r: r["left"])
+
+        text = " ".join(str(r["text"]) for r in line).strip()
+
+        line_objects.append({
+            "text": text,
+            "top": min(r["top"] for r in line),
+            "left": min(r["left"] for r in line),
+            "right": max(r["left"] + r["width"] for r in line),
+            "bottom": max(r["top"] + r["height"] for r in line),
+        })
+
+    return line_objects
+
+
+# ------------------------------------------------
+# STEP 2: Hybrid segmentation (layout + light semantics)
+# ------------------------------------------------
+def is_bullet(text):
+    bullets = ["•", "-", "–", "—", "¢"]
+    return any(text.strip().startswith(b) for b in bullets)
+
+
+def ends_sentence(text):
+    return text.strip().endswith((".", ":", "?", "!"))
+
+
+def group_segments(lines,
+                   vertical_thresh=35,
+                   indent_thresh=120,
+                   max_lines=4):
+
+    if not lines:
+        return []
+
+    segments = []
+    current = [lines[0]]
+
+    for i in range(1, len(lines)):
+
+        prev = lines[i - 1]
+        curr = lines[i]
+
+        vertical_gap = abs(curr["top"] - prev["top"])
+        indent_gap = abs(curr["left"] - prev["left"])
+
+        split = False
+
+        if vertical_gap > vertical_thresh:
+            split = True
+        elif indent_gap > indent_thresh:
+            split = True
+        elif is_bullet(curr["text"]):
+            split = True
+        elif ends_sentence(prev["text"]):
+            split = True
+        elif len(current) >= max_lines:
+            split = True
+
+        if split:
+            segments.append(current)
+            current = [curr]
+        else:
+            current.append(curr)
+
+    segments.append(current)
+
+    return segments
+
+
+# ------------------------------------------------
+# STEP 3: Convert segments → text + bbox
+# ------------------------------------------------
+def build_segment_objects(segments):
+
+    output = []
+
+    for i, seg in enumerate(segments, 1):
+
+        text = " ".join(line["text"] for line in seg)
+
+        bbox = {
+            "top": min(l["top"] for l in seg),
+            "left": min(l["left"] for l in seg),
+            "right": max(l["right"] for l in seg),
+            "bottom": max(l["bottom"] for l in seg)
+        }
+
+        output.append({
+            "segment_id": i,
+            "text": text,
+            "bbox": bbox
+        })
+
+    return output
+
+
+# ------------------------------------------------
+# STEP 4: Process single file
+# ------------------------------------------------
+def process_single_ocr(csv_path):
+
+    lines = ocr_csv_to_lines(csv_path)
+
+    if not lines:
+        return []
+
+    segments = group_segments(lines)
+
+    return build_segment_objects(segments)
+
+
+# ------------------------------------------------
+# STEP 5: Save output (FIXED PATH STRUCTURE)
+# ------------------------------------------------
+def save_output(output_root, base_root, csv_path, segments):
+
+    rel_path = os.path.relpath(csv_path, base_root)
+
+    out_path = os.path.join(output_root, rel_path)
+    out_path = out_path.replace("_ocr.csv", "_segments.json")
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(segments, f, indent=2)
+
+    return out_path
+
+
+# ------------------------------------------------
+# STEP 6: Recursive processing
+# ------------------------------------------------
+def process_all_ocr(roots, base_root, output_root):
+
+    if isinstance(roots, str):
+        roots = [roots]
+
+    for root in roots:
+
+        ocr_files = glob(os.path.join(root, "**", "*_ocr.csv"), recursive=True)
+
+        print(f"{root} → Found {len(ocr_files)} OCR files")
+
+        for csv_path in ocr_files:
+
+            try:
+                segments = process_single_ocr(csv_path)
+
+                out_path = save_output(output_root, base_root, csv_path, segments)
+
+                print(f"✅ {csv_path} → {out_path}")
+
+            except Exception as e:
+                print(f"❌ Failed: {csv_path} | {e}")
+
+
+# ------------------------------------------------
+# MAIN
+# ------------------------------------------------
+def main():
+
+    BASE_ROOT = "mlpdataset/data_oct"
+
+    TRAIN_ROOT = [
+        "mlpdataset/data_oct/anat-1",
+        "mlpdataset/data_oct/anat-2",
+        "mlpdataset/data_oct/bio-1",
+        "mlpdataset/data_oct/bio-3",
+        "mlpdataset/data_oct/bio-4",
+        "mlpdataset/data_oct/dental",
+        "mlpdataset/data_oct/psy-1",
+        "mlpdataset/data_oct/psy-2"
+    ]
+
+    TEST_ROOT = [
+        "mlpdataset/data_oct/ml-1",
+        "mlpdataset/data_oct/speaking"
+    ]
+
+    OUTPUT_ROOT = os.path.join("results", "ocr_segments")
+
+    print("\n--- TRAIN ---\n")
+    process_all_ocr(TRAIN_ROOT, BASE_ROOT, OUTPUT_ROOT)
+
+    print("\n--- TEST ---\n")
+    process_all_ocr(TEST_ROOT, BASE_ROOT, OUTPUT_ROOT)
+
+
+if __name__ == "__main__":
+    main()

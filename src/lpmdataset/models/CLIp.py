@@ -4,341 +4,355 @@ import numpy as np
 import pandas as pd
 import os
 from PIL import Image
-from scipy.stats import wasserstein_distance_nd
 
+# =========================================================
+# DEVICE
+# =========================================================
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # =========================================================
 # LOAD CLIP
 # =========================================================
-
 model, preprocess, _ = open_clip.create_model_and_transforms(
     "ViT-B-32",
     pretrained="openai"
 )
-
 tokenizer = open_clip.get_tokenizer("ViT-B-32")
-
 model = model.to(device)
 model.eval()
 
-# =========================================================
-# ASR SEGMENTS (2 second window)
-# =========================================================
 
+# =========================================================
+# BUILD LECTURE MAP  (FIXED)
+#
+# The mapping problem has two layers:
+#
+# 1. data_oct folder: <channel>/<playlist>/<lecture_num>/
+#    lecture_num is the YouTube PLAYLIST POSITION (1-based), with gaps
+#    for videos that exist in the playlist but had no annotations collected.
+#    e.g. speaking lecture 30 exists in data_oct but raw_video_links only
+#         has 24 speaking rows because 6 playlist videos were never annotated.
+#
+# 2. figures folder: <channel>/<youtube_id>/
+#    No playlist subfolder, no lecture number — just the bare YouTube ID.
+#
+# The bridge:
+#   - raw_video_links rows filtered by channel, kept in file order,
+#     are in the same order as the YouTube playlist.
+#   - figure_annotations tells us exactly which lecture numbers appear
+#     in the dataset for this channel (sorted).
+#   - Zipping these two gives the correct lecture_num -> youtube_id map.
+#
+# Returns: { "01": "_Awekr6-ilg", "03": "0gf3IJFTxEA", ... }
+# =========================================================
+def build_lecture_map(raw_video_links_csv, figure_annotations_csv, channel):
+    df_videos = pd.read_csv(raw_video_links_csv)
+    df_ann    = pd.read_csv(figure_annotations_csv)
+
+    # Filter to this channel, preserving file order (= playlist order)
+    channel_videos = df_videos[df_videos["speaker"] == channel].reset_index(drop=True)
+    if channel_videos.empty:
+        raise ValueError(f"No rows for channel '{channel}' in raw_video_links.csv")
+
+    # Extract sorted lecture numbers for this channel from figure_annotations
+    parts = df_ann["Input.save_dir"].str.split("/", expand=True)
+    df_ann["_channel"]     = parts[1]
+    df_ann["_lecture_num"] = parts[3]
+
+    channel_lec_nums = sorted(
+        df_ann[df_ann["_channel"] == channel]["_lecture_num"]
+        .dropna()
+        .astype(int)
+        .unique()
+    )
+
+    if len(channel_lec_nums) != len(channel_videos):
+        print(
+            f"  ⚠️  '{channel}': {len(channel_videos)} videos in raw_video_links "
+            f"vs {len(channel_lec_nums)} lecture nums in figure_annotations. "
+            f"Using first {min(len(channel_videos), len(channel_lec_nums))} entries."
+        )
+
+    n = min(len(channel_videos), len(channel_lec_nums))
+    lecture_map = {}
+    for i in range(n):
+        lec_key    = f"{channel_lec_nums[i]:02d}"
+        youtube_id = str(channel_videos.iloc[i]["video_id"]).replace(".mp4", "").strip()
+        lecture_map[lec_key] = youtube_id
+
+    print(f"✅ Lecture map for '{channel}' ({len(lecture_map)} entries):")
+    for lec, vid in lecture_map.items():
+        print(f"   {lec} -> {vid}")
+
+    return lecture_map
+
+
+# =========================================================
+# SAFE CSV
+# =========================================================
+def safe_read_csv(path):
+    try:
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            return pd.DataFrame()
+        return pd.read_csv(path)
+    except Exception:
+        print(f"  ⚠️  Bad CSV: {path}")
+        return pd.DataFrame()
+
+
+# =========================================================
+# ASR SEGMENTS
+# =========================================================
 def build_segments(asr_path, window=2.0):
+    df = safe_read_csv(asr_path)
+    if df.empty:
+        return []
 
-    df = pd.read_csv(asr_path)
     df["Start"] = df["Start"].clip(lower=0)
-
     segments = []
     t = df["Start"].min()
     end_time = df["End"].max()
 
     while t < end_time:
-
         chunk = df[(df["Start"] >= t) & (df["End"] <= t + window)]
-
         if len(chunk) > 0:
             text = " ".join(chunk["Word"].astype(str).tolist())
-            segments.append({
-                "start": t,
-                "end": t + window,
-                "text": text
-            })
-
+            segments.append({"start": t, "end": t + window, "text": text})
         t += window
 
     return segments
 
-# =========================================================
-# LOAD MOUSE
-# =========================================================
 
+# =========================================================
+# LOAD & NORMALIZE MOUSE
+# =========================================================
 def load_mouse(mouse_path):
-
-    df = pd.read_csv(mouse_path)
-
-    df[["x","y"]] = df["coord"].str.extract(r"\((\d+),\s*(\d+)\)")
+    df = safe_read_csv(mouse_path)
+    if df.empty:
+        return df
+    df[["x", "y"]] = df["coord"].str.extract(r"\((\d+),\s*(\d+)\)")
     df["x"] = df["x"].astype(float)
     df["y"] = df["y"].astype(float)
-
     return df
 
+
 def normalize_mouse(df, screen_w=854, screen_h=480):
+    if df.empty:
+        return df
     df["x"] /= screen_w
     df["y"] /= screen_h
     return df
 
-# =========================================================
-# PATCH EXTRACTION
-# =========================================================
 
+# =========================================================
+# PATCH EXTRACTION & ENCODING
+# =========================================================
 def extract_patches(image, grid_size=16):
-
     W, H = image.size
     patch_w = W // grid_size
     patch_h = H // grid_size
-
     patches = []
-
     for r in range(grid_size):
         for c in range(grid_size):
             left = c * patch_w
-            top = r * patch_h
-            right = left + patch_w
-            bottom = top + patch_h
-
-            patch = image.crop((left, top, right, bottom))
-            patches.append(patch)
-
+            top  = r * patch_h
+            patches.append(image.crop((left, top, left + patch_w, top + patch_h)))
     return patches
 
-# =========================================================
-# ENCODE PATCHES
-# =========================================================
 
 def encode_patches(patches):
-
-    processed = []
-
-    for p in patches:
-        out = preprocess(p)
-        if isinstance(out, list):
-            out = out[0]
-        processed.append(out)
-
+    processed = [preprocess(p) for p in patches]
     image_inputs = torch.stack(processed).to(device)
-
     with torch.no_grad():
-        image_features = model.encode_image(image_inputs)
+        feats = model.encode_image(image_inputs)
+    return feats / feats.norm(dim=-1, keepdim=True)
 
-    image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-
-    return image_features
 
 # =========================================================
-# TEXT → HEATMAP
+# TEXT -> HEATMAP -> POINT
 # =========================================================
-
 def text_to_heatmap(text, image_features, grid_size=16):
+    if text.strip() == "":
+        return np.ones((grid_size, grid_size)) / (grid_size ** 2)
 
-    text_tokens = tokenizer([text]).to(device)
-
+    tokens = tokenizer([text]).to(device)
     with torch.no_grad():
-        text_features = model.encode_text(text_tokens)
-
+        text_features = model.encode_text(tokens)
     text_features = text_features / text_features.norm(dim=-1, keepdim=True)
 
-    similarity = image_features @ text_features.T
-    similarity = similarity.squeeze()
+    sim = (image_features @ text_features.T).squeeze()
+    heatmap = torch.softmax(sim, dim=0)
+    return heatmap.reshape(grid_size, grid_size).cpu().numpy()
 
-    heatmap = torch.softmax(similarity, dim=0)
-    heatmap = heatmap.reshape(grid_size, grid_size)
 
-    return heatmap.cpu().numpy()
-
-# =========================================================
-# HEATMAP TO COORD + WEIGHTS
-# =========================================================
-
-def heatmap_to_distribution(heatmap):
-
+def heatmap_to_point(heatmap):
     grid_size = heatmap.shape[0]
     xs = np.linspace(0, 1, grid_size)
     ys = np.linspace(0, 1, grid_size)
-
-    coords = []
-    weights = []
-
-    for i in range(grid_size):
-        for j in range(grid_size):
-            coords.append([xs[j], ys[i]])
-            weights.append(heatmap[i, j])
-
-    coords = np.array(coords)
-    weights = np.array(weights)
-
-    weights = weights / (weights.sum() + 1e-8)
-
-    return coords, weights
-
-# =========================================================
-# IOU
-# =========================================================
-
-def compute_iou(pred_df, gt_df, bins=16):
-
-    hist1, _, _ = np.histogram2d(
-        pred_df["x"], pred_df["y"],
-        bins=bins,
-        range=[[0,1],[0,1]]
-    )
-
-    hist2, _, _ = np.histogram2d(
-        gt_df["x"], gt_df["y"],
-        bins=bins,
-        range=[[0,1],[0,1]]
-    )
-
-    hist1 /= hist1.sum() + 1e-8
-    hist2 /= hist2.sum() + 1e-8
-
-    intersection = np.minimum(hist1, hist2).sum()
-    union = np.maximum(hist1, hist2).sum()
-
-    return intersection / (union + 1e-8)
-
-# =========================================================
-# RMSE (centroid difference)
-# =========================================================
-
-def compute_rmse(heatmap, mouse_df):
-
-    grid_size = heatmap.shape[0]
-    xs = np.linspace(0, 1, grid_size)
-    ys = np.linspace(0, 1, grid_size)
-
-    exp_x = 0
-    exp_y = 0
-
+    exp_x, exp_y = 0.0, 0.0
     for i in range(grid_size):
         for j in range(grid_size):
             exp_x += xs[j] * heatmap[i, j]
             exp_y += ys[i] * heatmap[i, j]
+    return exp_x, exp_y
 
-    gt_x = mouse_df["x"].mean()
-    gt_y = mouse_df["y"].mean()
-
-    return np.sqrt((exp_x - gt_x)**2 + (exp_y - gt_y)**2)
 
 # =========================================================
-# WASSERSTEIN
+# GET SLIDE PATH  (FIXED)
+#
+# data_oct: <data_root>/<channel>/<playlist>/<lecture_num>/<slide>_trace.csv
+# figures:  <slide_root>/<channel>/<youtube_id>/<slide>.jpg
+#
+# No playlist in figures path. No lecture number either.
+# Just resolve: lecture_num -> youtube_id via lecture_map.
 # =========================================================
+def get_slide_path(slide_root, channel, lecture_num, slide_id, lecture_map):
+    lecture_key = f"{int(lecture_num):02d}"
 
-def compute_wasserstein(heatmap, mouse_df):
+    if lecture_key not in lecture_map:
+        return None
 
-    pred_coords, pred_weights = heatmap_to_distribution(heatmap)
+    youtube_id = lecture_map[lecture_key]
+    slide_dir  = os.path.join(slide_root, channel, youtube_id)
 
-    gt_coords = mouse_df[["x","y"]].values
-    gt_weights = np.ones(len(gt_coords))
-    gt_weights /= gt_weights.sum()
+    for ext in [".jpg", ".png"]:
+        path = os.path.join(slide_dir, slide_id + ext)
+        if os.path.exists(path):
+            return path
 
-    return wasserstein_distance_nd(
-        pred_coords,
-        gt_coords,
-        pred_weights,
-        gt_weights
-    )
+    return None
+
 
 # =========================================================
-# SLIDE EVALUATION
+# PROCESS ONE SLIDE
 # =========================================================
-
-def evaluate_clip_slide(slide_path, asr_path, mouse_path):
-
+def process_slide(slide_path, asr_path, mouse_path, save_path):
     image = Image.open(slide_path).convert("RGB")
-
     patches = extract_patches(image)
     image_features = encode_patches(patches)
 
     segments = build_segments(asr_path)
-    mouse_df = load_mouse(mouse_path)
+    mouse_df = normalize_mouse(load_mouse(mouse_path))
 
-    all_ious = []
-    all_emds = []
-    all_rmses = []
+    if mouse_df.empty:
+        return
 
+    rows = []
     for seg in segments:
-
         mouse_seg = mouse_df[
             (mouse_df["time"] >= seg["start"]) &
             (mouse_df["time"] <= seg["end"])
-        ].copy()
-
+        ]
         if len(mouse_seg) == 0:
             continue
 
-        mouse_seg = normalize_mouse(mouse_seg)
-
         heatmap = text_to_heatmap(seg["text"], image_features)
+        pred_x, pred_y = heatmap_to_point(heatmap)
 
-        pred_coords, _ = heatmap_to_distribution(heatmap)
+        for _, r in mouse_seg.iterrows():
+            rows.append({
+                "time":   r["time"],
+                "pred_x": pred_x,
+                "pred_y": pred_y,
+                "gold_x": r["x"],
+                "gold_y": r["y"],
+            })
 
-        pred_df = pd.DataFrame({
-            "x": pred_coords[:,0],
-            "y": pred_coords[:,1]
-        })
+    if not rows:
+        return
 
-        iou = compute_iou(pred_df, mouse_seg)
-        emd = compute_wasserstein(heatmap, mouse_seg)
-        rmse = compute_rmse(heatmap, mouse_seg)
+    df_out = pd.DataFrame(rows)
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    df_out.to_csv(save_path, index=False)
+    print(f"    ✅ Saved {len(rows)} rows -> {save_path}")
 
-        all_ious.append(iou)
-        all_emds.append(emd)
-        all_rmses.append(rmse)
-
-    return np.mean(all_ious), np.mean(all_emds), np.mean(all_rmses)
 
 # =========================================================
-# DATASET EVAL
+# MAIN PIPELINE  (FIXED)
+#
+# Walks: data_root/<channel>/<playlist>/<lecture_num>/
+# Finds _trace.csv files, resolves slide images via lecture_map.
 # =========================================================
+def run_pipeline(slide_root, data_root, test_channels,
+                 raw_video_links_csv, figure_annotations_csv):
 
-def evaluate_dataset_nested(slide_root, data_root):
+    for channel in test_channels:
+        print(f"\n{'='*60}")
+        print(f"CHANNEL: {channel}")
+        print(f"{'='*60}")
 
-    all_ious = []
-    all_emds = []
-    all_rmses = []
+        lecture_map = build_lecture_map(
+            raw_video_links_csv, figure_annotations_csv, channel
+        )
 
-    for root, _, files in os.walk(slide_root):
+        channel_dir = os.path.join(data_root, channel)
+        if not os.path.isdir(channel_dir):
+            print(f"  ⚠️  Directory not found: {channel_dir}")
+            continue
 
-        for file in files:
-
-            if not file.endswith(".png"):
+        # Walk: channel_dir/<playlist>/<lecture_num>/
+        for playlist in sorted(os.listdir(channel_dir)):
+            playlist_dir = os.path.join(channel_dir, playlist)
+            if not os.path.isdir(playlist_dir):
                 continue
 
-            slide_path = os.path.join(root, file)
-            relative_folder = os.path.relpath(root, slide_root)
-            slide_id = file.replace(".png", "")
+            for lecture_num in sorted(os.listdir(playlist_dir)):
+                lecture_dir = os.path.join(playlist_dir, lecture_num)
+                if not os.path.isdir(lecture_dir):
+                    continue
 
-            asr_path = os.path.join(
-                data_root,
-                relative_folder,
-                slide_id + "_spoken.csv"
-            )
+                trace_files = [f for f in os.listdir(lecture_dir)
+                               if f.endswith("_trace.csv")]
+                if not trace_files:
+                    continue
 
-            mouse_path = os.path.join(
-                data_root,
-                relative_folder,
-                slide_id + "_trace.csv"
-            )
+                print(f"\n  [{channel}/{playlist}/{lecture_num}]")
 
-            if not os.path.exists(asr_path) or not os.path.exists(mouse_path):
-                continue
+                for trace_file in sorted(trace_files):
+                    slide_id = trace_file.replace("_trace.csv", "")
 
-            print("Processing:", relative_folder, slide_id)
+                    slide_path = get_slide_path(
+                        slide_root, channel, lecture_num, slide_id, lecture_map
+                    )
+                    if slide_path is None:
+                        print(f"    ⚠️  No slide: lecture={lecture_num} {slide_id}")
+                        continue
 
-            iou, emd, rmse = evaluate_clip_slide(
-                slide_path, asr_path, mouse_path
-            )
+                    asr_path   = os.path.join(lecture_dir, slide_id + "_spoken.csv")
+                    mouse_path = os.path.join(lecture_dir, trace_file)
 
-            all_ious.append(iou)
-            all_emds.append(emd)
-            all_rmses.append(rmse)
+                    if not os.path.exists(asr_path):
+                        print(f"    ⚠️  No ASR file for {slide_id}")
+                        continue
 
-    print("================================")
-    print("Slides processed:", len(all_ious))
-    print("Average CLIP IoU:", np.mean(all_ious))
-    print("Average CLIP Wasserstein:", np.mean(all_emds))
-    print("Average CLIP RMSE:", np.mean(all_rmses))
+                    save_path = os.path.join(
+                        "results", "clip", channel, lecture_num, slide_id + ".csv"
+                    )
+                    print(f"    Processing {slide_id} ...")
+                    try:
+                        process_slide(slide_path, asr_path, mouse_path, save_path)
+                    except Exception as e:
+                        print(f"    ❌ Failed: {slide_id} | {e}")
+
 
 # =========================================================
-# MAIN
+# ENTRY POINT
 # =========================================================
-
 if __name__ == "__main__":
 
-    slide_dir = r"Figures/anat-2/ALRJCeVT0fQ"
-    data_dir  = r"mlpdataset/data_oct/anat-2/unordered/ALRJCeVT0fQ"
+    SLIDE_ROOT = r"C:/Users/saumy/figures/figures"
+    DATA_ROOT  = r"C:/Users/saumy/LPMDatasetRepo/LPMDataset/mlpdataset/data_oct"
 
-    evaluate_dataset_nested(slide_dir, data_dir)
+    RAW_VIDEO_LINKS_CSV    = os.path.join(DATA_ROOT, "raw_video_links.csv")
+    FIGURE_ANNOTATIONS_CSV = os.path.join(DATA_ROOT, "figure_annotations.csv")
+
+    # Must match 'speaker' column values in raw_video_links.csv
+    TEST_CHANNELS = ["ml-1", "speaking"]
+
+    run_pipeline(
+        slide_root             = SLIDE_ROOT,
+        data_root              = DATA_ROOT,
+        test_channels          = TEST_CHANNELS,
+        raw_video_links_csv    = RAW_VIDEO_LINKS_CSV,
+        figure_annotations_csv = FIGURE_ANNOTATIONS_CSV,
+    )
