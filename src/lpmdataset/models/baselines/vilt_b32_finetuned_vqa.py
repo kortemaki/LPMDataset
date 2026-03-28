@@ -153,8 +153,9 @@ class ModifiedVilt(nn.Module):
         return outputs
 
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 processor = ViltProcessor.from_pretrained("dandelin/vilt-b32-finetuned-vqa")
-model = ModifiedVilt(ViltForQuestionAnswering.from_pretrained("dandelin/vilt-b32-finetuned-vqa"))
+model = ModifiedVilt(ViltForQuestionAnswering.from_pretrained("dandelin/vilt-b32-finetuned-vqa")).to(device)
 
 
 def predict(slide: Slide):
@@ -177,6 +178,7 @@ def predict(slide: Slide):
             max_length=40,
             padding="max_length",
         )
+        encoding_slide_asr = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in encoding_slide_asr.items()}
         outputs = model(**encoding_slide_asr)
 
         # 1. Map out the sequence length

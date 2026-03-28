@@ -157,8 +157,9 @@ def measure_grounding_score(word, tokenizer, encoding_slide, outputs):
     }
 
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 processor = LayoutLMv3Processor.from_pretrained("microsoft/layoutlmv3-base")
-model = LayoutLMv3Model.from_pretrained("gordonlim/layoutlmv3-base-finetuned-rvlcdip")
+model = LayoutLMv3Model.from_pretrained("gordonlim/layoutlmv3-base-finetuned-rvlcdip").to(device)
 
 
 def predict(slide: Slide) -> list[tuple[int,int]]:
@@ -175,6 +176,7 @@ def predict(slide: Slide) -> list[tuple[int,int]]:
         if encoding_slide['input_ids'][0].shape[0] > 212:
             raise ValueError("Cannot process sentence longer than 212 tokens!")
         encoding_slide |= create_layoutlmv3_input_sequence(slide.ocr_text.df, sent, processor.tokenizer)
+        encoding_slide = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in encoding_slide.items()}
         outputs = model(output_attentions=True, return_dict=True, **encoding_slide)
 
         maps.append((tbounds, sent, get_attention_heatmap(outputs, encoding_slide['asr_range'])))
