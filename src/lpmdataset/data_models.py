@@ -5,7 +5,7 @@ import json
 import os
 
 import pandas as pd
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, computed_field, ConfigDict
 
 from lpmdataset.modalities.asr import ASR
 from lpmdataset.modalities.ocr import OCR, load_ocr_data
@@ -196,6 +196,8 @@ class Presentation(BaseModel):
 
 
 class Slide(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     presentation: Presentation
     slide_no: int
 
