@@ -17,12 +17,22 @@ dependencies = [
     "sentsplit>=1.0.8",
     "setuptools<82.0.0",
     "stop-words>=2025.11.4",
-    "torch>=2.10.0",
+    "torch==2.8.0",
     "tqdm==4.67.1",
     "transformers>=5.2.0",
     "wordcloud==1.9.6",
     "yt-dlp==2026.2.4",
 ]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu126" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
 
 [build-system]
 requires = ["uv-build"]
