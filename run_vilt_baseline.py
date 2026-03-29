@@ -1,46 +1,83 @@
+import os
+from time import sleep
+
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from PIL import Image
 
-from lpmdataset.data_models import Presentation, Folder
+from lpmdataset import data_models
 from lpmdataset.metrics import grid_metrics
 from lpmdataset.models.baselines.vilt_b32_finetuned_vqa import predict
 
 
-if __name__ == '__main__':
-    p = Presentation(folder=Folder.ANAT_2, yt_id="ALRJCeVT0fQ")
-    presentation_ious = []
-    presentation_emds = []
-    presentation_rmses = []
-    for s in tqdm(p.slides(), total=sum(1 for _ in p.slides())):
-        i = Image.open(s.png).convert("RGB")
-        s.mouse_trace.normalize_traces(height=900, width=1200)
+def process_presentation(p: data_models.Presentation) -> None:
+    resolution = data_models.SPEAKER_RESOLUTIONS[p.folder]
+    width = resolution.width
+    height = resolution.height
 
-        slide_ious = []
-        slide_emds = []
-        slide_rmses = []
+    # Build output directory mirroring ocr_asr convention:
+    # results/layoutlmv3/<root>/<order>/<video>/<slide>.csv
+    folder_parts = str(p.folder).split('/')
+    root_folder = folder_parts[0]
+    order_folder = folder_parts[1] if len(folder_parts) > 1 else ''
+    video_folder = os.path.basename(p.dir_path)
+    out_dir = os.path.join("results", "vilt_b32_finetuned_vqa", root_folder, order_folder, video_folder)
+    os.makedirs(out_dir, exist_ok=True)
+
+    for s in tqdm(p.slides(), total=sum(1 for _ in p.slides())):
+        slide_name = f"slide_{s.slide_no:03d}"
+        out_path = os.path.join(out_dir, f"{slide_name}.csv")
+        if os.path.exists(out_path):
+            continue
+
+        while not os.path.exists(s.asr_text.sentences_path):
+            print("Waiting for sentence segmentation")
+            sleep(5)
+
+        pred_xs, pred_ys, gold_xs, gold_ys = [], [], [], []
+
         for tbounds, sent, heatmap in predict(s):
             mouse_seg = s.mouse_trace.between(*tbounds)
             if len(mouse_seg) == 0:
                 continue
 
-            grid_size = heatmap.shape[0]
+            xy_pred = grid_metrics.heatmap_to_mle(heatmap)
 
-            pred_coords, _ = grid_metrics.heatmap_to_distribution(heatmap)
+            # Convert normalised [0,1] prediction to pixel coordinates
+            pred_x_px = xy_pred[0] * width
+            pred_y_px = xy_pred[1] * height
 
-            pred_df = pd.DataFrame({
-                "x": pred_coords[:, 0],
-                "y": pred_coords[:, 1],
-            })
+            # Repeat the single sentence-level prediction for every
+            # gold mouse point that falls inside this sentence window
+            n_pts = len(mouse_seg)
+            pred_xs.extend([pred_x_px] * n_pts)
+            pred_ys.extend([pred_y_px] * n_pts)
+            gold_xs.extend(mouse_seg['x'].values.tolist())
+            gold_ys.extend(mouse_seg['y'].values.tolist())
 
-            slide_ious.append(grid_metrics.compute_iou(pred_df, mouse_seg, grid_size=grid_size))
-            slide_emds.append(grid_metrics.compute_wasserstein(heatmap, mouse_seg))
-            slide_rmses.append(grid_metrics.compute_rmse(heatmap, mouse_seg))
-        presentation_ious.append(np.mean(slide_ious))
-        presentation_emds.append(np.mean(slide_emds))
-        presentation_rmses.append(np.mean(slide_rmses))
-    print(f"Slides processed: {len(presentation_ious)}")
-    print(f"Average IoU: {np.mean(presentation_ious).mean()}")
-    print(f"Average EMD: {np.mean(presentation_emds).mean()}")
-    print(f"Average RMSE: {np.mean(presentation_rmses).mean()}")
+        if len(pred_xs) == 0:
+            continue
+
+        N = len(pred_xs)
+
+        save_df = pd.DataFrame({
+            "time": np.arange(N),
+            "pred_x": pred_xs,
+            "pred_y": pred_ys,
+            "gold_x": gold_xs,
+            "gold_y": gold_ys,
+        })
+        save_df.to_csv(out_path, index=False)
+
+if __name__ == '__main__':
+    folders_to_process = [data_models.Folder.ML_1, data_models.Folder.SPEAKING]
+    for folder in tqdm(
+        folders_to_process,
+        total=len(folders_to_process)
+    ):
+        for p in tqdm(
+            data_models.iter_presentations(folder),
+            total=sum(1 for _ in data_models.iter_presentations(folder))
+        ):
+            process_presentation(p)

@@ -195,6 +195,24 @@ class Presentation(BaseModel):
                 yield s
 
 
+def iter_presentations(folder: Folder) -> Iterator[Presentation]:
+    """Yield a :class:`Presentation` for every valid video directory in *folder*."""
+    folder_path = os.path.join(DATA_DIR, folder)
+    for name in sorted(os.listdir(folder_path)):
+        subdir = os.path.join(folder_path, name)
+        if not os.path.isdir(subdir):
+            continue
+        try:
+            yield Presentation.from_directory(subdir)
+        except FileNotFoundError:
+            continue
+
+
+def iter_slides(presentation: Presentation) -> Iterator["Slide"]:
+    """Yield all :class:`Slide` objects for the given *presentation*."""
+    yield from presentation.slides()
+
+
 class Slide(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -220,7 +238,7 @@ class Slide(BaseModel):
     @computed_field
     @cached_property
     def asr_text(self) -> ASR:
-        return ASR(df=pd.read_csv(self.asr_file), slide_id=self.slide_no)
+        return ASR(path=self.asr_file)
 
     @computed_field
     @cached_property

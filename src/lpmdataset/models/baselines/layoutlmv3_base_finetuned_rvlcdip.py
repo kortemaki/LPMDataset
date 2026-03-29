@@ -174,7 +174,12 @@ def predict(slide: Slide) -> list[tuple[int,int]]:
         # encode slide
         encoding_slide = processor(image, sent, return_tensors="pt")
         if encoding_slide['input_ids'][0].shape[0] > 212:
-            raise ValueError("Cannot process sentence longer than 212 tokens!")
+            # Clip the sentence to 208 tokens (leaves room for special tokens) and re-encode
+            token_ids = processor.tokenizer._tokenizer.encode(
+                sent, add_special_tokens=False
+            ).ids[:208]
+            sent = processor.tokenizer.decode(token_ids, skip_special_tokens=True)
+            encoding_slide = processor(image, sent, return_tensors="pt")
         encoding_slide |= create_layoutlmv3_input_sequence(slide.ocr_text.df, sent, processor.tokenizer)
         encoding_slide = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in encoding_slide.items()}
         outputs = model(output_attentions=True, return_dict=True, **encoding_slide)

@@ -23,6 +23,38 @@ def heatmap_to_distribution(heatmap):
     return coords, weights
 
 
+def heatmap_to_mle(heatmap):
+    """Return the (x, y) coordinate of the bucket with the maximum activation.
+
+    Parameters
+    ----------
+    heatmap : np.ndarray
+        Unnormalized 2-D activation grid
+
+    Returns
+    -------
+    np.ndarray
+        Shape-(2,) array ``[x, y]`` in [0, 1] corresponding to the center of
+        the highest-activation bucket.
+
+    Notes
+    -----
+    Tie-breaking: when multiple buckets share the maximum value, the one whose
+    **flattened (row-major) index is smallest** is chosen.  This is the
+    top-left-most winner when scanning left-to-right, top-to-bottom — i.e.
+    ``np.argmax`` behaviour on the flattened array.
+    """
+    rows, cols = heatmap.shape
+    xs = np.linspace(0, 1, cols)
+    ys = np.linspace(0, 1, rows)
+
+    # np.argmax returns the first (row-major) occurrence on ties
+    flat_idx = np.argmax(heatmap)
+    i, j = np.unravel_index(flat_idx, heatmap.shape)
+
+    return np.array([xs[j], ys[i]])
+
+
 def compute_iou(pred_df, gt_df, grid_size):
     """
     Updated to accept dynamic grid_size (e.g., 14 for LayoutLMv3, 16 for CLIP)
