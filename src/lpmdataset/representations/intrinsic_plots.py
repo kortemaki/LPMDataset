@@ -6,6 +6,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 from lpmdataset import data_models
 from lpmdataset.representations.heatmap import HeatMap
@@ -27,6 +28,16 @@ PLOTS_DIR = "results/plots"
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
 REQUIRED_COLS = ["pred_x", "pred_y", "gold_x", "gold_y"]
+
+
+def _slide_id(path: str) -> int | None:
+    """Extract the numeric slide id from a prediction CSV path."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    parts = stem.split("_")
+    try:
+        return int(parts[1])
+    except (IndexError, ValueError):
+        return None
 
 
 # =========================================================
@@ -329,12 +340,19 @@ def plot_metric_bars(metrics: dict, model_name: str):
     _save(fig, f"{model_name}_movement_metrics")
 
 
-def plot_combined_heatmap(root: str, model_name: str, num_slides: int = 5):
+def plot_combined_heatmap(root: str, model_name: str, num_slides: int = 5,
+                         chosen_slide_ids: set[int] | None = None):
     files = load_result_files(root)
     if not files:
         return
 
-    chosen = np.random.choice(files, min(num_slides, len(files)), replace=False)
+    if chosen_slide_ids is not None:
+        chosen = [f for f in files if _slide_id(f) in chosen_slide_ids]
+        if not chosen:
+            log.warning(f"{model_name}: none of the chosen slides found — skipping heatmap")
+            return
+    else:
+        chosen = np.random.choice(files, min(num_slides, len(files)), replace=False)
     gx, gy, px, py = [], [], [], []
 
     for f in chosen:
@@ -359,62 +377,34 @@ def plot_combined_heatmap(root: str, model_name: str, num_slides: int = 5):
     _save(fig, f"{model_name}_spatial_distribution")
 
 
-def spatial_metric_and_visualization(
-    root: str,
-    model_name: str,
-    num_slides: int = 5,
+def _heatmap_hist(df: pd.DataFrame, x_col: str, y_col: str, bins: int) -> np.ndarray:
+    """Build a normalised 2-D histogram via HeatMap upsampling."""
+    hm = HeatMap(pd.DataFrame({
+        "x": df[x_col], "y": df[y_col],
+        "timestamp": np.arange(len(df)),
+    }))
+    hm.upsample()
+    h, _, _ = hm.low_res(bins=bins)
+    return h / (h.sum() + 1e-8)
+
+
+def compute_spatial_histogram_intersection(
+    files: list[str],
     bins: int = 32,
 ) -> list[float]:
-    files = load_result_files(root)
-    if not files:
-        log.warning("spatial_metric_and_visualization: no files found")
-        return []
-
-    chosen = np.random.choice(files, min(num_slides, len(files)), replace=False)
-
-    # Pre-filter to only slides with valid data
-    valid = [(f, df) for f in chosen
-             if (df := _read_csv_safe(f)) is not None]
-
-    if not valid:
-        return []
-
+    """Compute per-slide spatial histogram intersection over *all* files."""
     scores = []
-    fig, axes = plt.subplots(len(valid), 2, figsize=(8, 4 * len(valid)))
-    if len(valid) == 1:
-        axes = np.array([axes])
-
-    for i, (f, df) in enumerate(valid):
+    for f in tqdm(files, desc="Spatial histogram intersection"):
+        df = _read_csv_safe(f)
+        if df is None:
+            continue
         try:
-            def make_heatmap(x_col, y_col):
-                hm = HeatMap(pd.DataFrame({
-                    "x": df[x_col], "y": df[y_col],
-                    "timestamp": np.arange(len(df)),
-                }))
-                hm.upsample()
-                h, _, _ = hm.low_res(bins=bins)
-                return h / (h.sum() + 1e-8)
-
-            hist_g = make_heatmap("gold_x", "gold_y")
-            hist_p = make_heatmap("pred_x", "pred_y")
+            hist_g = _heatmap_hist(df, "gold_x", "gold_y", bins)
+            hist_p = _heatmap_hist(df, "pred_x", "pred_y", bins)
         except Exception as e:
             log.warning(f"HeatMap failed for {f}: {e}")
             continue
-
-        score = float(np.minimum(hist_g, hist_p).sum())
-        scores.append(score)
-
-        axes[i, 0].imshow(hist_g.T, origin="lower", aspect="auto")
-        axes[i, 0].set_title(f"Slide {i + 1} — Gold")
-        axes[i, 0].axis("off")
-
-        axes[i, 1].imshow(hist_p.T, origin="lower", aspect="auto")
-        axes[i, 1].set_title(f"Slide {i + 1} — Pred  Score:{score:.3f}")
-        axes[i, 1].axis("off")
-
-    fig.suptitle(f"{model_name} — Spatial Metric + Heatmaps", fontsize=14)
-    fig.tight_layout()
-    _save(fig, f"{model_name}_spatial_heatmaps")
+        scores.append(float(np.minimum(hist_g, hist_p).sum()))
 
     if scores:
         log.info(f"Spatial Histogram Intersection — Mean: {np.mean(scores):.4f}")
@@ -422,11 +412,73 @@ def spatial_metric_and_visualization(
     return scores
 
 
+def plot_spatial_heatmaps(
+    root: str,
+    model_name: str,
+    num_slides: int = 5,
+    bins: int = 32,
+    chosen_slide_ids: set[int] | None = None,
+):
+    """Render per-slide gold/pred heatmap pairs for a chosen subset."""
+    files = load_result_files(root)
+    if not files:
+        log.warning("plot_spatial_heatmaps: no files found")
+        return
+
+    if chosen_slide_ids is not None:
+        chosen = [f for f in files if _slide_id(f) in chosen_slide_ids]
+        if not chosen:
+            log.warning(f"{model_name}: none of the chosen slides found — skipping spatial viz")
+            return
+    else:
+        chosen = np.random.choice(files, min(num_slides, len(files)), replace=False)
+
+    # Pre-filter to only slides with valid data
+    valid = [(f, df) for f in chosen
+             if (df := _read_csv_safe(f)) is not None]
+
+    if not valid:
+        return
+
+    fig, axes = plt.subplots(len(valid), 2, figsize=(8, 4 * len(valid)))
+    if len(valid) == 1:
+        axes = np.array([axes])
+
+    for i, (f, df) in enumerate(valid):
+        try:
+            slide = data_models.Slide.from_prediction_file(f)
+            slide_label = f"{slide.presentation.yt_id}/slide_{slide.slide_no:03}"
+        except Exception:
+            slide_label = f"slide {i + 1}"
+
+        try:
+            hist_g = _heatmap_hist(df, "gold_x", "gold_y", bins)
+            hist_p = _heatmap_hist(df, "pred_x", "pred_y", bins)
+        except Exception as e:
+            log.warning(f"HeatMap failed for {f}: {e}")
+            continue
+
+        score = float(np.minimum(hist_g, hist_p).sum())
+
+        axes[i, 0].imshow(hist_g.T, origin="lower", aspect="auto")
+        axes[i, 0].set_title(f"{slide_label} — Gold")
+        axes[i, 0].axis("off")
+
+        axes[i, 1].imshow(hist_p.T, origin="lower", aspect="auto")
+        axes[i, 1].set_title(f"{slide_label} — Pred  Score:{score:.3f}")
+        axes[i, 1].axis("off")
+
+    fig.suptitle(f"{model_name} — Spatial Heatmaps", fontsize=14)
+    fig.tight_layout()
+    _save(fig, f"{model_name}_spatial_heatmaps")
+
+
 # =========================================================
 # EVALUATION
 # =========================================================
 
-def evaluate_model(root: str, name: str) -> dict:
+def evaluate_model(root: str, name: str,
+                   chosen_slide_ids: set[int] | None = None) -> dict:
     log.info(f"\n===== {name} =====")
 
     files = load_result_files(root)
@@ -456,12 +508,13 @@ def evaluate_model(root: str, name: str) -> dict:
         log.warning("No trajectory metrics computed.")
 
     movement_metrics = compute_movement_metrics(files)
-    region_proxy_metrics = compute_region_proxy_accuracy(files)
-    region_type_metrics = compute_region_type_accuracy(files)
+    spatial_scores = compute_spatial_histogram_intersection(files)
+    #region_proxy_metrics = compute_region_proxy_accuracy(files)
+    #region_type_metrics = compute_region_type_accuracy(files)
 
     plot_confusion_matrix(movement_metrics, name)
     plot_metric_bars(movement_metrics, name)
-    plot_combined_heatmap(root, name)
+    plot_combined_heatmap(root, name, chosen_slide_ids=chosen_slide_ids)
 
     return {
         "trajectory": {
@@ -470,8 +523,9 @@ def evaluate_model(root: str, name: str) -> dict:
             "IoU":  float(np.mean(ious))  if ious else 0.0,
         },
         "movement": movement_metrics,
-        "region_proxy": region_proxy_metrics,
-        "region_type": region_type_metrics,
+        "spatial_histogram_intersection": float(np.mean(spatial_scores)) if spatial_scores else 0.0,
+        #"region_proxy": region_proxy_metrics,
+        #"region_type": region_type_metrics,
     }
 
 
@@ -493,9 +547,35 @@ if __name__ == "__main__":
         "LayoutLMv3": os.path.join(BASE, "layoutlmv3_base_finetuned_rvlcdip"),
     }
 
+    # Collect slide IDs available per model, then pick from the
+    # intersection so that every model is plotted for the same slides.
+    num_slides = 5
+    per_model_ids: list[set[int]] = []
+    for root in MODELS.values():
+        if not os.path.exists(root):
+            continue
+        ids = {sid for f in load_result_files(root)
+               if (sid := _slide_id(f)) is not None}
+        if ids:
+            per_model_ids.append(ids)
+
+    if per_model_ids:
+        common_ids = set.intersection(*per_model_ids)
+        if not common_ids:
+            log.warning("No slides common to all models; using union instead")
+            common_ids = set.union(*per_model_ids)
+        pool = sorted(common_ids)
+        n = min(num_slides, len(pool))
+        chosen_slide_ids: set[int] = set(
+            np.random.choice(pool, n, replace=False).tolist()
+        )
+        log.info(f"Chosen slide IDs for plots: {sorted(chosen_slide_ids)}")
+    else:
+        chosen_slide_ids = set()
+
     for name, root in MODELS.items():
         if not os.path.exists(root):
             log.warning(f"Skipping {name} — path not found: {root}")
             continue
-        evaluate_model(root, name)
-        spatial_metric_and_visualization(root, name)
+        evaluate_model(root, name, chosen_slide_ids=chosen_slide_ids)
+        plot_spatial_heatmaps(root, name, chosen_slide_ids=chosen_slide_ids)
