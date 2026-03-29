@@ -201,8 +201,10 @@ def compute_region_type_accuracy(files: list[str]) -> dict:
     all_match = 0
     all_total = 0
     per_file  = []
+    all_pred_regions = []
+    all_gold_regions = []
 
-    for f in files:
+    for f in tqdm(files, total=len(files)):
         df = _read_csv_safe(f)
         if df is None:
             continue
@@ -239,13 +241,31 @@ def compute_region_type_accuracy(files: list[str]) -> dict:
         all_match += matches
         all_total += total
 
+        all_pred_regions.extend(pred_regions.tolist())
+        all_gold_regions.extend(gold_regions.tolist())
+
     overall = all_match / (all_total + 1e-8)
+
+    # Build confusion matrix over all observed region types
+    labels = sorted(
+        set(all_pred_regions + all_gold_regions), key=lambda r: r.value
+    )
+    label_names = [r.name for r in labels]
+    label_to_idx = {r: i for i, r in enumerate(labels)}
+    cm = np.zeros((len(labels), len(labels)), dtype=int)
+    for g, p in zip(all_gold_regions, all_pred_regions):
+        cm[label_to_idx[g], label_to_idx[p]] += 1
 
     log.info("\n--- Region Type Metrics ---")
     log.info(f"Files evaluated: {len(per_file)}")
     log.info(f"Region Type Accuracy: {overall:.4f}")
 
-    return {"per_file": per_file, "overall_accuracy": overall}
+    return {
+        "per_file": per_file,
+        "overall_accuracy": overall,
+        "confusion_matrix": cm,
+        "labels": label_names,
+    }
 # =========================================================
 # MOVEMENT METRICS
 # =========================================================
@@ -306,23 +326,25 @@ def _save(fig: plt.Figure, name: str):
     plt.close(fig)
 
 
-def plot_confusion_matrix(metrics: dict, model_name: str):
-    cm = np.array([
-        [metrics["TN"], metrics["FP"]],
-        [metrics["FN"], metrics["TP"]],
-    ])
-    fig, ax = plt.subplots(figsize=(6, 5))
+def plot_confusion_matrix(
+    cm: np.ndarray,
+    labels: list[str],
+    model_name: str,
+    filename_suffix: str = "confusion_matrix",
+):
+    n = len(labels)
+    fig, ax = plt.subplots(figsize=(max(6, n + 1), max(5, n)))
     im = ax.imshow(cm)
-    ax.set_xticks([0, 1]); ax.set_xticklabels(["No Move", "Move"])
-    ax.set_yticks([0, 1]); ax.set_yticklabels(["No Move", "Move"])
-    for i in range(2):
-        for j in range(2):
+    ax.set_xticks(range(n)); ax.set_xticklabels(labels, rotation=45, ha="right")
+    ax.set_yticks(range(n)); ax.set_yticklabels(labels)
+    for i in range(n):
+        for j in range(n):
             ax.text(j, i, str(cm[i, j]), ha="center", va="center",
                     color="white", fontsize=12)
     ax.set_title(f"{model_name} — Confusion Matrix")
     ax.set_xlabel("Predicted");  ax.set_ylabel("Actual")
     fig.colorbar(im, ax=ax)
-    _save(fig, f"{model_name}_confusion_matrix")
+    _save(fig, f"{model_name}_{filename_suffix}")
 
 
 def plot_metric_bars(metrics: dict, model_name: str):
@@ -509,12 +531,22 @@ def evaluate_model(root: str, name: str,
 
     movement_metrics = compute_movement_metrics(files)
     spatial_scores = compute_spatial_histogram_intersection(files)
-    #region_proxy_metrics = compute_region_proxy_accuracy(files)
-    #region_type_metrics = compute_region_type_accuracy(files)
+    region_proxy_metrics = compute_region_proxy_accuracy(files)
+    region_type_metrics = compute_region_type_accuracy(files)
 
-    plot_confusion_matrix(movement_metrics, name)
+    movement_cm = np.array([
+        [movement_metrics["TN"], movement_metrics["FP"]],
+        [movement_metrics["FN"], movement_metrics["TP"]],
+    ])
+    plot_confusion_matrix(movement_cm, ["No Move", "Move"], name,
+                          "movement_confusion_matrix")
     plot_metric_bars(movement_metrics, name)
     plot_combined_heatmap(root, name, chosen_slide_ids=chosen_slide_ids)
+
+    if "confusion_matrix" in region_type_metrics:
+        plot_confusion_matrix(region_type_metrics["confusion_matrix"],
+                              region_type_metrics["labels"], name,
+                              "region_type_confusion_matrix")
 
     return {
         "trajectory": {
@@ -524,8 +556,8 @@ def evaluate_model(root: str, name: str,
         },
         "movement": movement_metrics,
         "spatial_histogram_intersection": float(np.mean(spatial_scores)) if spatial_scores else 0.0,
-        #"region_proxy": region_proxy_metrics,
-        #"region_type": region_type_metrics,
+        "region_proxy": region_proxy_metrics,
+        "region_type": region_type_metrics,
     }
 
 
