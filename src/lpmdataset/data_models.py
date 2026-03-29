@@ -88,6 +88,58 @@ FOLDER_TO_FIGURES = {
     Folder.SPEAKING: 'speaking',
 }
 
+FIGURE_SLIDE_MAP = {
+    Folder.ML_1: {
+        "2xr4P0WGKSA": {
+            0: ("17", 0),
+            8: ("17", 1),
+            9: ("17", 1),
+            10: ("17", 9),
+            11: ("17", 9),
+            12: ("17", 9),
+            13: ("17", 9),
+            14: ("17", 10),
+            15: ("17", 10),
+            16: ("17", 10),
+            17: ("17", 10),
+            18: ("17", 10),
+            19: ("17", 11),
+            21: ("17", 17),
+            22: ("17", 18),
+            23: ("17", 18),
+            24: ("17", 21),
+            25: ("17", 22),
+            26: ("17", 22),
+            27: ("17", 23),
+            28: ("17", 24),
+            29: ("17", 27),
+            30: ("17", 28),
+            31: ("17", 28),
+            32: ("17", 23),
+            33: ("17", 23),
+            34: ("17", 29),
+            35: ("17", 29),
+            36: ("17", 30),
+            37: ("17", 31),
+            38: ("17", 34),
+            39: ("17", 34),
+            40: ("17", 35),
+            41: ("17", 38),
+            42: ("17", 39),
+            43: ("17", 40),
+            44: ("17", 41),
+            45: ("17", 41),
+            46: ("17", 41),
+            47: ("17", 42),
+            48: ("17", 43),
+            49: ("17", 44),
+            50: ("17", 45),
+            51: ("17", 46),
+        }
+    }
+}
+
+
 class Resolution(Enum):
     R240P  = ("240p", 426, 240)
     R360P  = ("360p", 640, 360)
@@ -129,7 +181,7 @@ SPEAKER_RESOLUTIONS = {
   'psy-1/LectureSeriesForIntrotoPsy-PSY101': Resolution.R720P,
   'dental/OralSurgeryNBDEPartII': Resolution.R1080P,
   'dental/OralPathologyNBDEPartII': Resolution.R1080P,
-  'bio-1/unordered': Resolution.R1080P,
+  'bio-1/unordered': Resolution.R720P,
   'speaking/EssayWritingandPresentationskills': Resolution.R480P,
   'dental/PeriodonticsNBDEPartII': Resolution.R1080P,
   'bio-4/unordered': Resolution.R720P,
@@ -139,7 +191,7 @@ SPEAKER_RESOLUTIONS = {
   'dental/PatientManagementNBDEPartII': Resolution.R1080P,
   'bio-3/Biol1020': Resolution.R480P,
   'dental/PerceptualAbilityTestDAT': Resolution.R720P,
-  'ml-1/MultimodalMachineLearning': Resolution.SXGA,
+  'ml-1/MultimodalMachineLearning': Resolution.R720P,
   'dental/OrthodonticsNBDEPartII': Resolution.R720P,
   'anat-2/unordered': Resolution.R480P,
   'dental/HeadNeckAnatomyINBDE': Resolution.R720P,
@@ -268,9 +320,20 @@ class Slide(BaseModel):
 
     @computed_field
     @cached_property
+    def figures_slideno(self) -> tuple[str, int] | None:
+        if self.presentation.folder not in FIGURE_SLIDE_MAP or self.presentation.yt_id not in FIGURE_SLIDE_MAP[self.presentation.folder]:
+            return self.presentation.yt_id, self.slide_no
+        return FIGURE_SLIDE_MAP[self.presentation.folder][self.presentation.yt_id].get(self.slide_no, None)
+
+    @computed_field
+    @cached_property
     def figures(self) -> pd.DataFrame:
         """Return figure bounding boxes for this slide as a DataFrame."""
-        key = f"data/{self.presentation.folder}/{self.presentation.yt_id}/slide_{self.slide_no:03d}.jpg"
+        if self.figures_slideno is None:
+            return pd.DataFrame([], columns=["label", "left", "top", "height", "width"])
+        figures_yt_id, figures_slideno = self.figures_slideno
+        key = f"data/{self.presentation.folder}/{figures_yt_id}/slide_{figures_slideno:03d}.jpg"
+        print(key)
         row = figure_bbs[figure_bbs['Input.save_dir'] == key]
         if row.empty:
             return pd.DataFrame(columns=["label", "left", "top", "height", "width"])

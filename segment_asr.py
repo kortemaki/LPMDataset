@@ -85,14 +85,18 @@ async def segment_sentences(slide: Slide) -> None:
     output_path = slide.asr_text.sentences_path
     if os.path.exists(output_path):
         return
-    response = await client.chat.completions.parse(
-        model="gpt-4o-mini",
-        messages=[
-            {'role': 'developer', 'content': ASR_SEGMENTER_SYSTEM_PROMPT},
-            {'role': 'user', 'content': input_str(slide.asr_text.df)},
-        ],
-        response_format=SentenceSegmentation,
-    )
+    try:
+        response = await client.chat.completions.parse(
+            model="gpt-4o-mini",
+            messages=[
+                {'role': 'developer', 'content': ASR_SEGMENTER_SYSTEM_PROMPT},
+                {'role': 'user', 'content': input_str(slide.asr_text.df)},
+            ],
+            response_format=SentenceSegmentation,
+        )
+    except openai.BadRequestError:
+        print(f"Bad Request: {slide.presentation.folder}/{slide.presentation.yt_id}/{slide.slide_no:03}")
+        return
     output = response.choices[0].message.parsed
     pd.DataFrame(
         [(i, s.text, s.start, s.end) for i, s in enumerate(output.sentences, start=1)],
