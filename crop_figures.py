@@ -3,19 +3,17 @@
 Usage:
     python crop_figures.py
 
-Adjust the FOLDER, YT_ID, and SLIDE_NO constants below as needed.
 """
 
 from pathlib import Path
 import numpy as np
 from PIL import Image
+from tqdm import tqdm
 
 from lpmdataset.data_models import Folder, Presentation, Slide, SPEAKER_RESOLUTIONS
 
 # --- Configuration -----------------------------------------------------------
 FOLDER   = Folder.ML_1
-YT_ID    = '2xr4P0WGKSA'
-SLIDE_NO = 17
 OUT_DIR  = Path("figures")
 # -----------------------------------------------------------------------------
 
@@ -73,10 +71,8 @@ def calibrate_pillarbox(presentation: Presentation, threshold: int = 10) -> tupl
     return left_bar, right_bar
 
 
-def main():
-    presentation = Presentation(folder=FOLDER, yt_id=YT_ID)
-    slide = Slide(presentation=presentation, slide_no=SLIDE_NO)
-
+def crop_figures(slide: Slide):
+    presentation = slide.presentation
     figures = slide.figures
     if figures.empty:
         print("No figures annotated for this slide.")
@@ -135,7 +131,7 @@ def main():
         crop = img.crop((left, top, right, bottom))
 
         label = str(row["label"]).replace(" ", "_").lower()
-        out_path = OUT_DIR / f"slide_{SLIDE_NO:03d}_fig{i:02d}_{label}.png"
+        out_path = OUT_DIR / f"{presentation.yt_id}_slide_{SLIDE_NO:03d}_fig{i:02d}_{label}.png"
         crop.save(out_path)
         print(f"Saved {out_path}  [{label}]  ({right-left}x{bottom-top}px)")
 
@@ -143,4 +139,10 @@ def main():
 
 
 if __name__ == "__main__":
+    for presentation in data_models.iter_presentations(FOLDER):
+        for slide in tqdm(
+            presentation.iter_slides(),
+            total=sum(1 for _ in presentation.iter_slides()),
+        ):
+            crop_figures(slide)
     main()

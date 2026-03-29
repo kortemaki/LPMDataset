@@ -90,6 +90,20 @@ FOLDER_TO_FIGURES = {
 
 FIGURE_SLIDE_MAP = {
     Folder.ML_1: {
+        "VIq5r7mCAyw": {i: ("01", i) for i in range(53)},
+        "fBYu8I52nVM": {i: ("02", i) for i in range(81)},
+        "yPrwVpeysG8": {i: ("03", i) for i in range(42)},
+        "E_3gxQWaCoQ": {i: ("04", i) for i in range(55)},
+        "XVHN0izviAw": {i: ("06", i) for i in range(82)},
+        "37z_tJD81y8": {i: ("07", i) for i in range(69)},
+        "2_dZ5GBlRgU": {i: ("08", i) for i in range(65)},
+        "4P4qBBxpthg": {i: ("09", i) for i in range(59)},
+        "xcOMHwjNLaA": {i: ("10", i) for i in range(62)},
+        "rLGIrhq8HlQ": {i: ("11", i) for i in range(51)},
+        "L1TiP9P55-8": {i: ("12", i) for i in range(58)},
+        "ZdR6aljufXk": {i: ("13", i) for i in range(62)},
+        "OI02F2XEe_0": {i: ("15", i) for i in range(67)},
+        "UsAgvMC5fRs": {i: ("16", i) for i in range(41)},
         "2xr4P0WGKSA": {
             0: ("17", 0),
             8: ("17", 1),
@@ -136,6 +150,32 @@ FIGURE_SLIDE_MAP = {
             50: ("17", 45),
             51: ("17", 46),
         }
+    },
+    Folder.SPEAKING: {
+        "KL_I9eE2aGk": {i: ("01", i) for i in range(50)},
+        "2Tv_gIw_EPw": {i: ("03", i) for i in range(52)},
+        "GJdadQuElnU": {i: ("04", i) for i in range(61)},
+        "giwVjX1iuMg": {i: ("05", i) for i in range(41)},
+        "KxenIPZl3jg": {i: ("06", i) for i in range(46)},
+        "D1CN2KIGpdo": {i: ("09", i) for i in range(47)},
+        "GanmCzqO_AE": {i: ("10", i) for i in range(52)},
+        "NPeyJe7NP0k": {i: ("12", i) for i in range(51)},
+        "iQTDUc91ED4": {i: ("14", i) for i in range(41)},
+        "hFB-I5tDNyU": {i: ("15", i) for i in range(46)},
+        "pI54QMfexuU": {i: ("16", i) for i in range(38)},
+        "mYF9wUzI490": {i: ("17", i) for i in range(41)},
+        "eghZJJg0gP0": {i: ("18", i) for i in range(39)},
+        "n4GQaRpGrhk": {i: ("19", i) for i in range(42)},
+        "fK2ULsNUfAY": {i: ("21", i) for i in range(34)},
+        "lBI8DXevsDk": {i: ("22", i) for i in range(42)},
+        "fwdxieyNbWM": {i: ("23", i) for i in range(45)},
+        "bfOusdt4LJ0": {i: ("24", i) for i in range(39)},
+        "_Awekr6-ilg": {i: ("25", i) for i in range(42)},
+        "aZDNeibQBzY": {i: ("26", i) for i in range(21)},
+        "1zp3EWKJAsA": {i: ("27", i) for i in range(34)},
+        "0gf3IJFTxEA": {i: ("28", i) for i in range(24)},
+        "FFyGM625F4c": {i: ("29", i) for i in range(22)},
+        "CP_StVLO_T0": {i: ("30", i) for i in range(35)},
     }
 }
 
