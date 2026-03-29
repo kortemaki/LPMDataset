@@ -387,13 +387,28 @@ def plot_combined_heatmap(root: str, model_name: str, num_slides: int = 5,
     if not gx:
         return
 
-    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-    h1 = axes[0].hist2d(gx, gy, bins=40, range=[[0, 1], [0, 1]])
+    hbins = 40
+    hist_range = [[0, 1], [0, 1]]
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    h1 = axes[0].hist2d(gx, gy, bins=hbins, range=hist_range)
     axes[0].set_title(f"{model_name} — Gold")
     fig.colorbar(h1[3], ax=axes[0])
-    h2 = axes[1].hist2d(px, py, bins=40, range=[[0, 1], [0, 1]])
+    h2 = axes[1].hist2d(px, py, bins=hbins, range=hist_range)
     axes[1].set_title(f"{model_name} — Predicted")
     fig.colorbar(h2[3], ax=axes[1])
+
+    gold_h, _, _ = np.histogram2d(gx, gy, bins=hbins, range=hist_range)
+    pred_h, _, _ = np.histogram2d(px, py, bins=hbins, range=hist_range)
+    diff_h = pred_h - gold_h
+    vmax = max(np.abs(diff_h).max(), 1e-8)
+    im_diff = axes[2].imshow(
+        diff_h.T, origin="lower", aspect="auto",
+        extent=[0, 1, 0, 1], cmap="bwr", vmin=-vmax, vmax=vmax,
+    )
+    axes[2].set_title(f"{model_name} — Diff (Pred−Gold)")
+    fig.colorbar(im_diff, ax=axes[2])
+
     fig.suptitle(f"{model_name} — Spatial Distribution")
     fig.tight_layout()
     _save(fig, f"{model_name}_spatial_distribution")
@@ -462,7 +477,7 @@ def plot_spatial_heatmaps(
     if not valid:
         return
 
-    fig, axes = plt.subplots(len(valid), 2, figsize=(8, 4 * len(valid)))
+    fig, axes = plt.subplots(len(valid), 3, figsize=(12, 4 * len(valid)))
     if len(valid) == 1:
         axes = np.array([axes])
 
@@ -481,6 +496,8 @@ def plot_spatial_heatmaps(
             continue
 
         score = float(np.minimum(hist_g, hist_p).sum())
+        hist_diff = hist_p - hist_g
+        vmax = max(np.abs(hist_diff).max(), 1e-8)
 
         axes[i, 0].imshow(hist_g.T, origin="lower", aspect="auto")
         axes[i, 0].set_title(f"{slide_label} — Gold")
@@ -489,6 +506,14 @@ def plot_spatial_heatmaps(
         axes[i, 1].imshow(hist_p.T, origin="lower", aspect="auto")
         axes[i, 1].set_title(f"{slide_label} — Pred  Score:{score:.3f}")
         axes[i, 1].axis("off")
+
+        im_diff = axes[i, 2].imshow(
+            hist_diff.T, origin="lower", aspect="auto",
+            cmap="bwr", vmin=-vmax, vmax=vmax,
+        )
+        axes[i, 2].set_title(f"{slide_label} — Diff (Pred−Gold)")
+        axes[i, 2].axis("off")
+        fig.colorbar(im_diff, ax=axes[i, 2], fraction=0.046, pad=0.04)
 
     fig.suptitle(f"{model_name} — Spatial Heatmaps", fontsize=14)
     fig.tight_layout()
