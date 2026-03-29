@@ -373,7 +373,6 @@ class Slide(BaseModel):
             return pd.DataFrame([], columns=["label", "left", "top", "height", "width"])
         figures_yt_id, figures_slideno = self.figures_slideno
         key = f"data/{self.presentation.folder}/{figures_yt_id}/slide_{figures_slideno:03d}.jpg"
-        print(key)
         row = figure_bbs[figure_bbs['Input.save_dir'] == key]
         if row.empty:
             return pd.DataFrame(columns=["label", "left", "top", "height", "width"])

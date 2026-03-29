@@ -10,10 +10,10 @@ import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
-from lpmdataset.data_models import Folder, Presentation, Slide, SPEAKER_RESOLUTIONS
+from lpmdataset import data_models
 
 # --- Configuration -----------------------------------------------------------
-FOLDER   = Folder.ML_1
+FOLDER   = data_models.Folder.SPEAKING
 OUT_DIR  = Path("figures")
 # -----------------------------------------------------------------------------
 
@@ -50,7 +50,7 @@ def detect_pillarbox(
     return left_bar, right_bar
 
 
-def calibrate_pillarbox(presentation: Presentation, threshold: int = 10) -> tuple[int, int]:
+def calibrate_pillarbox(presentation: data_models.Presentation, threshold: int = 10) -> tuple[int, int]:
     """Compute consensus pillarbox widths over all slides in *presentation*.
 
     Loads each slide PNG, runs :func:`detect_pillarbox` on the central strip,
@@ -71,7 +71,7 @@ def calibrate_pillarbox(presentation: Presentation, threshold: int = 10) -> tupl
     return left_bar, right_bar
 
 
-def crop_figures(slide: Slide):
+def crop_figures(slide: data_models.Slide):
     presentation = slide.presentation
     figures = slide.figures
     if figures.empty:
@@ -83,7 +83,7 @@ def crop_figures(slide: Slide):
     png_w, png_h = img.size
 
     # Native annotation resolution (the resolution the bbox coords were recorded in).
-    native_res = SPEAKER_RESOLUTIONS[str(FOLDER)]
+    native_res = data_models.SPEAKER_RESOLUTIONS[str(FOLDER)]
     native_w, native_h = native_res.width, native_res.height
 
     # --- Debug info ----------------------------------------------------------
@@ -131,7 +131,7 @@ def crop_figures(slide: Slide):
         crop = img.crop((left, top, right, bottom))
 
         label = str(row["label"]).replace(" ", "_").lower()
-        out_path = OUT_DIR / f"{presentation.yt_id}_slide_{SLIDE_NO:03d}_fig{i:02d}_{label}.png"
+        out_path = OUT_DIR / f"{presentation.yt_id}_slide_{slide.slide_no:03d}_fig{i:02d}_{label}.png"
         crop.save(out_path)
         print(f"Saved {out_path}  [{label}]  ({right-left}x{bottom-top}px)")
 
@@ -141,8 +141,7 @@ def crop_figures(slide: Slide):
 if __name__ == "__main__":
     for presentation in data_models.iter_presentations(FOLDER):
         for slide in tqdm(
-            presentation.iter_slides(),
-            total=sum(1 for _ in presentation.iter_slides()),
+            presentation.slides(),
+            total=sum(1 for _ in presentation.slides()),
         ):
             crop_figures(slide)
-    main()

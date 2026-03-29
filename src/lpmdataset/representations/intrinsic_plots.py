@@ -7,7 +7,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from src.lpmdataset.representations.heatmap import HeatMap
+from lpmdataset import data_models
+from lpmdataset.representations.heatmap import HeatMap
+
 
 log = logging.getLogger(__name__)
 logging.basicConfig(
@@ -127,12 +129,12 @@ def compute_metrics(df: pd.DataFrame):
 
 
 # =========================================================
-# REGION METRICS
+# REGION PROXY METRICS
 # Purely CSV-based — no Slide/OCR reconstruction needed.
 # Uses screen quadrants (2x2 grid) as a proxy for region.
 # =========================================================
 
-def compute_region_accuracy(files: list[str]) -> dict:
+def compute_region_proxy_accuracy(files: list[str]) -> dict:
     """
     A prediction is 'correct' when pred and gold fall in the same
     screen quadrant. Requires only the four CSV columns — never
@@ -142,7 +144,7 @@ def compute_region_accuracy(files: list[str]) -> dict:
     all_total = 0
     per_file  = []
 
-    for f in files:
+    for f in tqdm(files, total=len(files)):
         df = _read_csv_safe(f)
         if df is None:
             continue
@@ -167,13 +169,72 @@ def compute_region_accuracy(files: list[str]) -> dict:
 
     overall = all_match / (all_total + 1e-8)
 
-    log.info("\n--- Region Metrics ---")
-    log.info(f"Files evaluated : {len(per_file)}")
-    log.info(f"Region Accuracy : {overall:.4f}")
+    log.info("\n--- Region Proxy Metrics ---")
+    log.info(f"Files evaluated: {len(per_file)}")
+    log.info(f"Region Proxy Accuracy: {overall:.4f}")
 
     return {"per_file": per_file, "overall_accuracy": overall}
 
+# =========================================================
+# REGION TYPE METRICS
+# Purely CSV-based — no Slide/OCR reconstruction needed.
+# Uses screen quadrants (2x2 grid) as a proxy for region.
+# =========================================================
 
+def compute_region_type_accuracy(files: list[str]) -> dict:
+    """Compute the rate at which predicted and gold points fall in the
+    same region type (inside an OCR bounding box vs. outside).
+
+    Returns a dict with per-file accuracies and overall statistics.
+    """
+    all_match = 0
+    all_total = 0
+    per_file  = []
+
+    for f in files:
+        df = _read_csv_safe(f)
+        if df is None:
+            continue
+
+        required = ["pred_x","pred_y","gold_x","gold_y"]
+        if not all(c in df.columns for c in required):
+            print(f"Skipping (bad format): {f}")
+            continue
+
+        if len(df) < 1:
+            continue
+
+        try:
+            slide = data_models.Slide.from_prediction_file(f)
+        except Exception as exc:
+            print(f"Skipping {f}: {exc}")
+            continue
+
+        pred_regions = df.apply(
+            lambda row: slide.get_region_for_point(
+                float(row['pred_x']), float(row['pred_y'])
+            ), axis=1,
+        )
+        gold_regions = df.apply(
+            lambda row: slide.get_region_for_point(
+                float(row['gold_x']), float(row['gold_y'])
+            ), axis=1,
+        )
+
+        matches = (pred_regions == gold_regions).sum()
+        total = len(df)
+        acc = matches / total
+        per_file.append({"file": f, "region_type_accuracy": acc})
+        all_match += matches
+        all_total += total
+
+    overall = all_match / (all_total + 1e-8)
+
+    log.info("\n--- Region Type Metrics ---")
+    log.info(f"Files evaluated: {len(per_file)}")
+    log.info(f"Region Type Accuracy: {overall:.4f}")
+
+    return {"per_file": per_file, "overall_accuracy": overall}
 # =========================================================
 # MOVEMENT METRICS
 # =========================================================
@@ -395,7 +456,8 @@ def evaluate_model(root: str, name: str) -> dict:
         log.warning("No trajectory metrics computed.")
 
     movement_metrics = compute_movement_metrics(files)
-    region_metrics   = compute_region_accuracy(files)
+    region_proxy_metrics = compute_region_proxy_accuracy(files)
+    region_type_metrics = compute_region_type_accuracy(files)
 
     plot_confusion_matrix(movement_metrics, name)
     plot_metric_bars(movement_metrics, name)
@@ -408,7 +470,8 @@ def evaluate_model(root: str, name: str) -> dict:
             "IoU":  float(np.mean(ious))  if ious else 0.0,
         },
         "movement": movement_metrics,
-        "region":   region_metrics,
+        "region_proxy": region_proxy_metrics,
+        "region_type": region_type_metrics,
     }
 
 
@@ -417,7 +480,7 @@ def evaluate_model(root: str, name: str) -> dict:
 # =========================================================
 
 if __name__ == "__main__":
-    BASE = "C:/Users/saumy/LPMDatasetRepo/LPMDataset/results"
+    BASE = os.environ["RESULTS_DIR"]
 
     MODELS = {
         "Clip": os.path.join(BASE, "clip"),
@@ -425,6 +488,9 @@ if __name__ == "__main__":
         "OCR_ASR_Semanctic": os.path.join(BASE, "ocr_asr_semantic_org"),
         "OCR Only":   os.path.join(BASE, "ocr_only"),
         "OCR + ASR":  os.path.join(BASE, "ocr_asr"),
+        "ViLT": os.path.join(BASE, "vilt_b32_finetuned_vqa"),
+        "ViLT hierarchical": os.path.join(BASE, "vilt_b32_finetuned_vqa_modified_hierarchical_patches"),
+        "LayoutLMv3": os.path.join(BASE, "layoutlmv3_base_finetuned_rvlcdip"),
     }
 
     for name, root in MODELS.items():
