@@ -5,8 +5,10 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "backoff>=2.2.1",
     "cyclopts>=4.6.0",
     "matplotlib==3.10.7",
+    "openai>=2.30.0",
     "opencv-python==4.13.0.92",
     "pandas==2.3.3",
     "pydantic>=2.12.5",
